@@ -705,8 +705,8 @@ static int ngap_gNB_handle_error_indication(sctp_assoc_t assoc_id, uint32_t stre
             NGAP_WARN("Received NG Error indication NGAP_CauseMisc_unspecified\n");
             break;
 
-          case NGAP_CauseMisc_unknown_PLMN:
-            NGAP_WARN("Received NG Error indication NGAP_CauseMisc_unknown_PLMN\n");
+          case NGAP_CauseMisc_unknown_PLMN_or_SNPN:
+            NGAP_WARN("Received NG Error indication NGAP_CauseMisc_unknown_PLMN_or_SNPN\n");
             break;
 
           default:
