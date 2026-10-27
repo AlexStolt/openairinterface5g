@@ -25,6 +25,7 @@
 #include "NGAP_PagingAttemptInformation.h"
 #include "NGAP_FiveG-S-TMSI.h"
 #include "NGAP_TAI.h"
+#include "NGAP_TargetRANNodeID.h"
 #include "NGAP_UEPagingIdentity.h"
 #include "NGAP_PDUSessionResourceFailedToModifyItemModRes.h"
 #include "NGAP_PDUSessionResourceFailedToSetupItemCxtRes.h"
