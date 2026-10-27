@@ -21,6 +21,7 @@
 #include "conversions.h"
 #include "intertask_interface.h"
 #include "ngap_common.h"
+#include "ngap_gNB_itti_messaging.h"
 #include "ngap_gNB_decoder.h"
 #include "ngap_gNB_defs.h"
 #include "ngap_gNB_encoder.h"
@@ -1602,6 +1603,86 @@ static int ngap_gNB_handle_dl_ran_status_transfer(sctp_assoc_t assoc_id, uint32_
   return 0;
 }
 
+
+/* BroadcastSessionSetupRequest (TS 38.413 §8.x, Rel-17 MBS).
+ *
+ * Non UE-associated: a broadcast session belongs to the cell, not to any UE,
+ * which is the whole point of it.
+ *
+ * What this does today is receive the session and acknowledge it. Acting on
+ * it needs two things that are not here: the session has to reach the DU,
+ * where SIB20 and the scheduler live, which is an F1 interface; and the
+ * payload has to arrive on its own tunnel instead of the interim proxy,
+ * which needs the MRB to be able to deliver, behind group scheduling.
+ * Until then the DU still reads the session from its descriptor file, and
+ * this handler proves the standard path works. */
+static int ngap_gNB_handle_broadcast_session_setup(sctp_assoc_t assoc_id, uint32_t stream, NGAP_NGAP_PDU_t *pdu)
+{
+  NGAP_BroadcastSessionSetupRequest_t *container;
+  NGAP_BroadcastSessionSetupRequestIEs_t *ie;
+  ngap_gNB_amf_data_t *amf_desc_p;
+
+  DevAssert(pdu != NULL);
+  container = &pdu->choice.initiatingMessage->value.choice.BroadcastSessionSetupRequest;
+
+  if ((amf_desc_p = ngap_gNB_get_AMF(NULL, assoc_id, 0)) == NULL) {
+    NGAP_ERROR("[SCTP %u] Received broadcast session setup for non existing AMF context\n", assoc_id);
+    return -1;
+  }
+
+  NGAP_FIND_PROTOCOLIE_BY_ID(NGAP_BroadcastSessionSetupRequestIEs_t, ie, container, NGAP_ProtocolIE_ID_id_MBS_SessionID, true);
+  if (ie == NULL) {
+    NGAP_ERROR("[SCTP %u] Broadcast session setup without an MBS Session ID\n", assoc_id);
+    return -1;
+  }
+
+  /* The TMGI is a 6-octet string: 3 octets of service id followed by the
+   * PLMN. It is the session's identity everywhere else -- SIB20 announces
+   * it, and the mobility requirement is that it does not change. */
+  const NGAP_TMGI_t *tmgi = &ie->value.choice.MBS_SessionID.tMGI;
+  if (tmgi->size < 3) {
+    NGAP_ERROR("[SCTP %u] Broadcast session setup with a malformed TMGI (%d octets)\n", assoc_id, (int)tmgi->size);
+    return -1;
+  }
+  char tmgi_hex[2 * 8 + 1] = {0};
+  for (int i = 0; i < tmgi->size && i < 8; i++)
+    snprintf(tmgi_hex + 2 * i, 3, "%02x", tmgi->buf[i]);
+  NGAP_INFO("[SCTP %u] Broadcast session setup: TMGI %s (%d octets)\n", assoc_id, tmgi_hex, (int)tmgi->size);
+
+  /* Acknowledge, echoing the session identity back so the core can see the
+   * RAN accepted the session it allocated. */
+  NGAP_NGAP_PDU_t out = {0};
+  out.present = NGAP_NGAP_PDU_PR_successfulOutcome;
+  asn1cCalloc(out.choice.successfulOutcome, head);
+  head->procedureCode = NGAP_ProcedureCode_id_BroadcastSessionSetup;
+  head->criticality = NGAP_Criticality_reject;
+  head->value.present = NGAP_SuccessfulOutcome__value_PR_BroadcastSessionSetupResponse;
+  NGAP_BroadcastSessionSetupResponse_t *resp = &head->value.choice.BroadcastSessionSetupResponse;
+
+  {
+    asn1cSequenceAdd(resp->protocolIEs.list, NGAP_BroadcastSessionSetupResponseIEs_t, resp_ie);
+    resp_ie->id = NGAP_ProtocolIE_ID_id_MBS_SessionID;
+    resp_ie->criticality = NGAP_Criticality_reject;
+    resp_ie->value.present = NGAP_BroadcastSessionSetupResponseIEs__value_PR_MBS_SessionID;
+    NGAP_MBS_SessionID_t *sid = &resp_ie->value.choice.MBS_SessionID;
+    OCTET_STRING_fromBuf(&sid->tMGI, (const char *)tmgi->buf, tmgi->size);
+  }
+
+  uint8_t *buffer = NULL;
+  uint32_t length = 0;
+  if (ngap_gNB_encode_pdu(&out, &buffer, &length) < 0) {
+    NGAP_ERROR("[SCTP %u] Failed to encode broadcast session setup response\n", assoc_id);
+    ASN_STRUCT_FREE_CONTENTS_ONLY(asn_DEF_NGAP_NGAP_PDU, &out);
+    return -1;
+  }
+  ASN_STRUCT_FREE_CONTENTS_ONLY(asn_DEF_NGAP_NGAP_PDU, &out);
+
+  /* Non UE-associated signalling goes on stream 0. */
+  ngap_gNB_itti_send_sctp_data_req(amf_desc_p->ngap_gNB_instance->instance, assoc_id, buffer, length, 0);
+  NGAP_INFO("[SCTP %u] Broadcast session setup acknowledged\n", assoc_id);
+  return 0;
+}
+
 typedef int (*ngap_message_decoded_callback)(sctp_assoc_t assoc_id, uint32_t stream, NGAP_NGAP_PDU_t *pdu);
 
 /* Handlers matrix. Only gNB related procedure present here */
@@ -1660,6 +1741,32 @@ const ngap_message_decoded_callback ngap_messages_callback[][3] = {
     {0, 0, 0}, /* WriteReplaceWarning */
     {0, 0, 0}, /* SecondaryRATDataUsageReport */
 
+    /* Rel-17 procedure codes. Only the ones the gNB acts on have a
+     * handler; the rest are listed so the table reaches far enough for
+     * the dispatcher's bounds check to admit them. */
+    {0, 0, 0}, /* UplinkRIMInformationTransfer */
+    {0, 0, 0}, /* DownlinkRIMInformationTransfer */
+    {0, 0, 0}, /* RetrieveUEInformation */
+    {0, 0, 0}, /* UEInformationTransfer */
+    {0, 0, 0}, /* RANCPRelocationIndication */
+    {0, 0, 0}, /* UEContextResume */
+    {0, 0, 0}, /* UEContextSuspend */
+    {0, 0, 0}, /* UERadioCapabilityIDMapping */
+    {0, 0, 0}, /* HandoverSuccess */
+    {0, 0, 0}, /* UplinkRANEarlyStatusTransfer */
+    {0, 0, 0}, /* DownlinkRANEarlyStatusTransfer */
+    {0, 0, 0}, /* AMFCPRelocationIndication */
+    {0, 0, 0}, /* ConnectionEstablishmentIndication */
+    {0, 0, 0}, /* BroadcastSessionModification */
+    {0, 0, 0}, /* BroadcastSessionRelease */
+    {ngap_gNB_handle_broadcast_session_setup, 0, 0}, /* BroadcastSessionSetup */
+    {0, 0, 0}, /* DistributionSetup */
+    {0, 0, 0}, /* DistributionRelease */
+    {0, 0, 0}, /* MulticastSessionActivation */
+    {0, 0, 0}, /* MulticastSessionDeactivation */
+    {0, 0, 0}, /* MulticastSessionUpdate */
+    {0, 0, 0}, /* MulticastGroupPaging */
+    {0, 0, 0}, /* BroadcastSessionReleaseRequired */
 };
 
 int ngap_gNB_handle_message(sctp_assoc_t assoc_id, int32_t stream, const uint8_t *const data, const uint32_t data_length)
