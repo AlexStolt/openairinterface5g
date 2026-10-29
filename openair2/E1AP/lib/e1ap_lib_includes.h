@@ -31,6 +31,11 @@
 
 // E1 Bearer Context Setup Request
 #include "E1AP_BearerContextSetupRequest.h"
+#include "E1AP_BCBearerContextSetupRequest.h"
+#include "E1AP_BCBearerContextSetupResponse.h"
+#include "E1AP_BCBearerContextToSetup.h"
+#include "E1AP_BCMRBSetupConfiguration-Item.h"
+#include "E1AP_GlobalMBSSessionID.h"
 #include "E1AP_GNB-CU-CP-E1SetupRequest.h"
 #include "E1AP_GNB-CU-UP-E1SetupRequest.h"
 #include "E1AP_System-BearerContextSetupRequest.h"

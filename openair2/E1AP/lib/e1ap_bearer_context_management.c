@@ -3204,3 +3204,131 @@ void free_e1ap_context_mod_confirm(const e1ap_bearer_mod_confirm_t *msg)
   UNUSED(msg);
   // do nothing
 }
+
+/* ---------------------------------------------------------------------------
+ * BC Bearer Context Setup (TS 37.483, Rel-17 MBS)
+ *
+ * The broadcast counterpart of the bearer context above. The difference that
+ * matters is whose context it is: a DRB belongs to a UE, an MRB belongs to
+ * the session, so the message carries a TMGI where the other carries a UE id.
+ * ------------------------------------------------------------------------ */
+
+struct E1AP_E1AP_PDU *encode_E1_bc_bearer_context_setup_request(const e1ap_bc_bearer_setup_req_t *in)
+{
+  E1AP_E1AP_PDU_t *pdu = calloc_or_fail(1, sizeof(*pdu));
+  pdu->present = E1AP_E1AP_PDU_PR_initiatingMessage;
+  asn1cCalloc(pdu->choice.initiatingMessage, msg);
+  msg->procedureCode = E1AP_ProcedureCode_id_BCBearerContextSetup;
+  msg->criticality = E1AP_Criticality_reject;
+  msg->value.present = E1AP_InitiatingMessage__value_PR_BCBearerContextSetupRequest;
+  E1AP_BCBearerContextSetupRequest_t *out = &msg->value.choice.BCBearerContextSetupRequest;
+
+  /* mandatory: the CU-CP's identifier for this MBS context */
+  {
+    asn1cSequenceAdd(out->protocolIEs.list, E1AP_BCBearerContextSetupRequestIEs_t, ie);
+    ie->id = E1AP_ProtocolIE_ID_id_GNB_CU_CP_MBS_E1AP_ID;
+    ie->criticality = E1AP_Criticality_reject;
+    ie->value.present = E1AP_BCBearerContextSetupRequestIEs__value_PR_GNB_CU_CP_MBS_E1AP_ID;
+    ie->value.choice.GNB_CU_CP_MBS_E1AP_ID = in->gNB_cu_cp_mbs_e1ap_id;
+  }
+
+  /* mandatory: which session, as the core named it */
+  {
+    asn1cSequenceAdd(out->protocolIEs.list, E1AP_BCBearerContextSetupRequestIEs_t, ie);
+    ie->id = E1AP_ProtocolIE_ID_id_GlobalMBSSessionID;
+    ie->criticality = E1AP_Criticality_reject;
+    ie->value.present = E1AP_BCBearerContextSetupRequestIEs__value_PR_GlobalMBSSessionID;
+    OCTET_STRING_fromBuf(&ie->value.choice.GlobalMBSSessionID.tmgi, (const char *)in->tmgi, sizeof(in->tmgi));
+  }
+
+  /* mandatory: the bearer to create */
+  {
+    asn1cSequenceAdd(out->protocolIEs.list, E1AP_BCBearerContextSetupRequestIEs_t, ie);
+    ie->id = E1AP_ProtocolIE_ID_id_BCBearerContextToSetup;
+    ie->criticality = E1AP_Criticality_reject;
+    ie->value.present = E1AP_BCBearerContextSetupRequestIEs__value_PR_BCBearerContextToSetup;
+    E1AP_BCBearerContextToSetup_t *ctx = &ie->value.choice.BCBearerContextToSetup;
+
+    uint8_t sst = in->sst;
+    OCTET_STRING_fromBuf(&ctx->snssai.sST, (const char *)&sst, 1);
+
+    asn1cSequenceAdd(ctx->bcMRBToSetupList.list, E1AP_BCMRBSetupConfiguration_Item_t, mrb);
+    mrb->mrb_ID = in->mrb_id;
+    /* Broadcast has no feedback, so the PDCP side is as plain as it gets:
+     * unacknowledged, no reordering to wait on. */
+    const bearer_context_pdcp_config_t pdcp = {
+        .pDCP_SN_Size_UL = E1AP_PDCP_SN_Size_s_12,
+        .pDCP_SN_Size_DL = E1AP_PDCP_SN_Size_s_12,
+        .rLC_Mode = E1AP_RLC_Mode_rlc_um_bidirectional,
+        .reorderingTimer = 0,
+        .discardTimer = 0,
+        .pDCP_Reestablishment = false,
+    };
+    mrb->mbs_pdcp_config = e1_encode_pdcp_config(&pdcp);
+
+    const qos_flow_to_setup_t qos = {.qfi = 1};
+    asn1cSequenceAdd(mrb->qoS_Flow_QoS_Parameter_List.list, E1AP_QoS_Flow_QoS_Parameter_Item_t, q);
+    *q = e1_encode_qos_flow_to_setup(&qos);
+  }
+
+  return pdu;
+}
+
+bool decode_E1_bc_bearer_context_setup_request(e1ap_bc_bearer_setup_req_t *out, const struct E1AP_E1AP_PDU *pdu)
+{
+  memset(out, 0, sizeof(*out));
+  const E1AP_BCBearerContextSetupRequest_t *in = &pdu->choice.initiatingMessage->value.choice.BCBearerContextSetupRequest;
+  for (int i = 0; i < in->protocolIEs.list.count; i++) {
+    const E1AP_BCBearerContextSetupRequestIEs_t *ie = in->protocolIEs.list.array[i];
+    switch (ie->id) {
+      case E1AP_ProtocolIE_ID_id_GNB_CU_CP_MBS_E1AP_ID:
+        out->gNB_cu_cp_mbs_e1ap_id = ie->value.choice.GNB_CU_CP_MBS_E1AP_ID;
+        break;
+      case E1AP_ProtocolIE_ID_id_GlobalMBSSessionID: {
+        const OCTET_STRING_t *t = &ie->value.choice.GlobalMBSSessionID.tmgi;
+        if (t->size != (int)sizeof(out->tmgi))
+          return false;
+        memcpy(out->tmgi, t->buf, sizeof(out->tmgi));
+        break;
+      }
+      case E1AP_ProtocolIE_ID_id_BCBearerContextToSetup: {
+        const E1AP_BCBearerContextToSetup_t *ctx = &ie->value.choice.BCBearerContextToSetup;
+        if (ctx->bcMRBToSetupList.list.count > 0)
+          out->mrb_id = ctx->bcMRBToSetupList.list.array[0]->mrb_ID;
+        if (ctx->snssai.sST.size > 0)
+          out->sst = ctx->snssai.sST.buf[0];
+        break;
+      }
+      default:
+        break;
+    }
+  }
+  return true;
+}
+
+struct E1AP_E1AP_PDU *encode_E1_bc_bearer_context_setup_response(uint32_t cp_id, uint32_t up_id)
+{
+  E1AP_E1AP_PDU_t *pdu = calloc_or_fail(1, sizeof(*pdu));
+  pdu->present = E1AP_E1AP_PDU_PR_successfulOutcome;
+  asn1cCalloc(pdu->choice.successfulOutcome, msg);
+  msg->procedureCode = E1AP_ProcedureCode_id_BCBearerContextSetup;
+  msg->criticality = E1AP_Criticality_reject;
+  msg->value.present = E1AP_SuccessfulOutcome__value_PR_BCBearerContextSetupResponse;
+  E1AP_BCBearerContextSetupResponse_t *out = &msg->value.choice.BCBearerContextSetupResponse;
+
+  {
+    asn1cSequenceAdd(out->protocolIEs.list, E1AP_BCBearerContextSetupResponseIEs_t, ie);
+    ie->id = E1AP_ProtocolIE_ID_id_GNB_CU_CP_MBS_E1AP_ID;
+    ie->criticality = E1AP_Criticality_reject;
+    ie->value.present = E1AP_BCBearerContextSetupResponseIEs__value_PR_GNB_CU_CP_MBS_E1AP_ID;
+    ie->value.choice.GNB_CU_CP_MBS_E1AP_ID = cp_id;
+  }
+  {
+    asn1cSequenceAdd(out->protocolIEs.list, E1AP_BCBearerContextSetupResponseIEs_t, ie);
+    ie->id = E1AP_ProtocolIE_ID_id_GNB_CU_UP_MBS_E1AP_ID;
+    ie->criticality = E1AP_Criticality_reject;
+    ie->value.present = E1AP_BCBearerContextSetupResponseIEs__value_PR_GNB_CU_UP_MBS_E1AP_ID;
+    ie->value.choice.GNB_CU_UP_MBS_E1AP_ID = up_id;
+  }
+  return pdu;
+}
