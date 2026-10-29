@@ -9,6 +9,8 @@
 #include "ngap_gNB_handlers.h"
 #include "openair2/COMMON/e1ap_messages_types.h"
 #include "openair2/RRC/NR/nr_rrc_proto.h"
+#include "common/ran_context.h"
+#include "openair2/RRC/NR/nr_rrc_defs.h"
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -1702,6 +1704,28 @@ static int ngap_gNB_handle_broadcast_session_setup(sctp_assoc_t assoc_id, uint32
      * and the CU-UP association is resolved at the send. */
     itti_send_msg_to_task(TASK_CUCP_E1, 0, msg);
     NGAP_INFO("[SCTP %u] Broadcast session handed to the user plane over E1\n", assoc_id);
+  }
+
+  /* And to the DU, which is what puts it on the air. The same call reaches
+   * the DU directly in a monolithic gNB and over F1AP in a split one, so
+   * neither topology is a special case here.
+   *
+   * This belongs in RRC rather than in the NGAP handler; it is here because
+   * there is no MBS session manager yet to own it. */
+  {
+    const gNB_RRC_INST *rrc = RC.nrrrc[0];
+    if (rrc != NULL && rrc->mac_rrc.broadcast_context_setup != NULL) {
+      f1ap_broadcast_ctx_setup_t req = {0};
+      req.gNB_cu_mbs_f1ap_id = 1;
+      memcpy(req.tmgi, tmgi->buf, sizeof(req.tmgi));
+      req.mrb_id = 1;
+      req.sst = 1;
+      /* The cell to broadcast on. One DU with one cell, so it is that one;
+       * selecting a subset is what the MBS service area is for. */
+      const sctp_assoc_t du = get_any_du_cell(&req.plmn, &req.nr_cellid);
+      rrc->mac_rrc.broadcast_context_setup(du, &req);
+      NGAP_INFO("[SCTP %u] Broadcast session handed to the DU (assoc_id %d)\n", assoc_id, du);
+    }
   }
   return 0;
 }

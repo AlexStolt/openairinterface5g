@@ -1371,3 +1371,44 @@ void positioning_measurement_request(const f1ap_positioning_measurement_req_t *r
   pos_meas_info->active = true;
   NR_SCHED_UNLOCK(&mac->sched_lock);
 }
+
+/* Broadcast Context Setup, at the DU.
+ *
+ * The session the core created has reached the component that puts it on the
+ * air. Everything the DU needs to announce it -- the TMGI, the bearer -- now
+ * comes from the network rather than from a file beside the binary. */
+void broadcast_context_setup(const f1ap_broadcast_ctx_setup_t *req)
+{
+  DevAssert(req != NULL);
+  gNB_MAC_INST *mac = RC.nrmac[0];
+  NR_SCHED_LOCK(&mac->sched_lock);
+  nr_cell_sched_t *cell = nr_mac_get_cell_by_cgi(mac, req->plmn, req->nr_cellid);
+  if (cell == NULL) {
+    NR_SCHED_UNLOCK(&mac->sched_lock);
+    LOG_E(NR_MAC, "MBS: broadcast context for a cell this DU does not serve\n");
+    return;
+  }
+  /* Broadcast has no membership, so nothing can report what it missed: no
+   * HARQ feedback, and the group is scheduled at a rate every receiver can
+   * decode instead. Multicast is where ACK/NACK belongs. */
+  const nr_mbs_group_config_t config = {
+      .config_id = 0,
+      .mrb_id = req->mrb_id,
+      /* LCID 32 is the MTCH, and four HARQ processes reserved for PTM --
+       * the values his test adapter used. They belong in the F1AP message
+       * once TS 38.473 carries them. */
+      .lcid = 32,
+      .harq_feedback = NR_MBS_HARQ_FEEDBACK_DISABLED,
+      .num_harq = 4,
+  };
+  const nr_mbs_group_t *group = nr_mac_add_mbs_group(mac, cell, &config);
+  NR_SCHED_UNLOCK(&mac->sched_lock);
+  if (group == NULL) {
+    LOG_E(NR_MAC, "MBS: could not create the group for MRB %ld\n", req->mrb_id);
+    return;
+  }
+  LOG_A(NR_MAC,
+        "MBS: group for TMGI %02x%02x%02x%02x%02x%02x on G-RNTI %04x, MRB %ld\n",
+        req->tmgi[0], req->tmgi[1], req->tmgi[2], req->tmgi[3], req->tmgi[4], req->tmgi[5],
+        group->g_rnti, req->mrb_id);
+}
