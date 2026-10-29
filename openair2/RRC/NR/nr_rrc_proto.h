@@ -45,6 +45,7 @@ void *rrc_gnb_task(void *args_p);
 
 bool ue_associated_to_cuup(const gNB_RRC_UE_t *ue);
 sctp_assoc_t get_existing_cuup_for_ue(const gNB_RRC_UE_t *ue);
+sctp_assoc_t get_any_cuup(void);
 sctp_assoc_t get_new_cuup_for_ue(const gNB_RRC_INST *rrc, const gNB_RRC_UE_t *ue, int sst, int sd);
 int rrc_gNB_process_e1_setup_req(sctp_assoc_t assoc_id, const e1ap_setup_req_t *req);
 bool is_cuup_associated(gNB_RRC_INST *rrc);

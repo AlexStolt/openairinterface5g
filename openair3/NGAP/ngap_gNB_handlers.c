@@ -7,6 +7,8 @@
  */
  
 #include "ngap_gNB_handlers.h"
+#include "openair2/COMMON/e1ap_messages_types.h"
+#include "openair2/RRC/NR/nr_rrc_proto.h"
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -1680,6 +1682,27 @@ static int ngap_gNB_handle_broadcast_session_setup(sctp_assoc_t assoc_id, uint32
   /* Non UE-associated signalling goes on stream 0. */
   ngap_gNB_itti_send_sctp_data_req(amf_desc_p->ngap_gNB_instance->instance, assoc_id, buffer, length, 0);
   NGAP_INFO("[SCTP %u] Broadcast session setup acknowledged\n", assoc_id);
+
+  /* Tell the user plane. In a CP/UP split the CU-UP terminates N3 and knows
+   * nothing of N2, so without this the session stops here. One session for
+   * now, so the context id is fixed; a session table replaces it when there
+   * can be more than one. */
+  {
+    MessageDef *msg = itti_alloc_new_message(TASK_NGAP, 0, E1AP_BC_BEARER_CONTEXT_SETUP_REQ);
+    /* The E1AP task takes the association from here, as it does for every
+     * other bearer context. */
+    msg->ittiMsgHeader.originInstance = get_any_cuup();
+    e1ap_bc_bearer_setup_req_t *req = &E1AP_BC_BEARER_CONTEXT_SETUP_REQ(msg);
+    memset(req, 0, sizeof(*req));
+    req->gNB_cu_cp_mbs_e1ap_id = 1;
+    memcpy(req->tmgi, tmgi->buf, sizeof(req->tmgi));
+    req->mrb_id = 1;
+    req->sst = 1;
+    /* Instance 0, as the RRC side does: the E1AP task is registered there,
+     * and the CU-UP association is resolved at the send. */
+    itti_send_msg_to_task(TASK_CUCP_E1, 0, msg);
+    NGAP_INFO("[SCTP %u] Broadcast session handed to the user plane over E1\n", assoc_id);
+  }
   return 0;
 }
 
