@@ -783,6 +783,37 @@ void GtpuUpdateTunnelOutgoingAddressAndTeid(instance_t instance,
   return;
 }
 
+/* Register a receive-only tunnel on a TEID that was not ours to choose.
+ *
+ * newGtpuCreateTunnel() allocates the incoming TEID, which is right for a
+ * PDU session: the gNB picks it and tells the core. A broadcast session is
+ * the other way round -- the 5GC picks one common TEID and gives the same
+ * one to every gNB in the service area -- so the value has to be accepted
+ * rather than generated. Nothing is ever sent back on it, so there is no
+ * outgoing side to fill in.
+ */
+bool gtpv1uRegisterIncomingTeid(teid_t incoming_teid, ue_id_t ue_id, int rb_id, gtpCallbackSDAP callBack)
+{
+  pthread_mutex_lock(&globGtp.gtp_lock);
+  if (globGtp.te2ue_mapping.find(incoming_teid) != globGtp.te2ue_mapping.end()) {
+    LOG_W(GTPU, "MBS: TEID 0x%x is already in use, not registering it again\n", incoming_teid);
+    pthread_mutex_unlock(&globGtp.gtp_lock);
+    return false;
+  }
+  globGtp.te2ue_mapping[incoming_teid].ue_id = ue_id;
+  globGtp.te2ue_mapping[incoming_teid].incoming_rb_id = rb_id;
+  globGtp.te2ue_mapping[incoming_teid].outgoing_teid = 0;
+  globGtp.te2ue_mapping[incoming_teid].callBack = NULL;
+  /* The SDAP-shaped callback on purpose: the plain one asserts that no QFI
+   * is present, and a broadcast G-PDU may well carry one. */
+  globGtp.te2ue_mapping[incoming_teid].callBackSDAP = callBack;
+  globGtp.te2ue_mapping[incoming_teid].errorIndicationCallBack = NULL;
+  globGtp.te2ue_mapping[incoming_teid].pdusession_id = (uint8_t)rb_id;
+  pthread_mutex_unlock(&globGtp.gtp_lock);
+  LOG_I(GTPU, "MBS: listening for the broadcast session on TEID 0x%x\n", incoming_teid);
+  return true;
+}
+
 teid_t newGtpuCreateTunnel(instance_t instance,
                            ue_id_t ue_id,
                            int incoming_bearer_id,
