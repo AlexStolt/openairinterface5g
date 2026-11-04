@@ -152,6 +152,9 @@ typedef struct gtpv1u_gnb_delete_tunnel_req_s gtpv1u_gnb_delete_tunnel_req_t;
                                      size_t len);
 
   instance_t gtpv1Init(openAddr_t context);
+/* Receive a broadcast MBS session's multicast distribution. See the
+ * definition for why this needs a socket of its own. */
+instance_t gtpv1InitMulticast(in_addr_t group, in_addr_t source, in_addr_t local, uint16_t port);
   int gtpv1Term(instance_t inst);
   void *gtpv1uTask(void *args);
 
