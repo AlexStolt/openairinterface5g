@@ -42,6 +42,19 @@ NR_SearchSpace_t *rrc_searchspace_config(bool is_common,
                                          int searchspaceid,
                                          int coresetid,
                                          const int num_agg_level_candidates[NUM_PDCCH_AGG_LEVELS]);
+/// CORESET and search space of pdcch-ConfigMulticast, distinct from the ones of all BWPs of the cell, as the ID spaces are
+/// shared across BWPs (TS 38.331 §6.3.2 ControlResourceSet, SearchSpace)
+#define NR_MBS_CORESET_ID 11
+#define NR_MBS_SEARCH_SPACE_ID 30
+NR_ControlResourceSet_t *get_mbs_coreset_config(const NR_ServingCellConfigCommon_t *scc, const nr_mac_config_t *configuration);
+NR_SearchSpace_t *get_mbs_search_space_config(const NR_ControlResourceSet_t *coreset, const nr_mac_config_t *configuration);
+void add_mbs_cellGroupConfig(NR_CellGroupConfig_t *cellGroupConfig,
+                             rnti_t g_rnti,
+                             int config_id,
+                             bool harq_feedback,
+                             const NR_ControlResourceSet_t *coreset,
+                             const NR_SearchSpace_t *ss,
+                             const NR_RLC_BearerConfig_t *ptm_bearer);
 int csi_symbols_in_slot(const NR_ServingCellConfigCommon_t *scc);
 void prepare_sim_uecap(NR_UE_NR_Capability_t *cap,
                        NR_ServingCellConfigCommon_t *scc,
@@ -116,6 +129,7 @@ NR_RLC_BearerConfig_t *get_SRB_RLC_BearerConfig(long channelId,
                                                 long priority,
                                                 long bucketSizeDuration,
                                                 const nr_rlc_configuration_t *default_rlc_config);
+NR_RLC_BearerConfig_t *get_MRB_PTM_RLC_BearerConfig(long lcChannelId, long mrbId, const nr_rlc_configuration_t *default_rlc_config);
 NR_RLC_BearerConfig_t *get_DRB_RLC_BearerConfig(long lcChannelId,
                                                 long drbId,
                                                 NR_RLC_Config_PR rlc_conf,

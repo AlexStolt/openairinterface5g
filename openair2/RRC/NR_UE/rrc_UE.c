@@ -34,6 +34,7 @@
 #include "LAYER2/nr_rlc/nr_rlc_oai_api.h"
 #include "nr-uesoftmodem.h"
 #include "LAYER2/nr_pdcp/nr_pdcp_oai_api.h"
+#include "LAYER2/nr_pdcp/nr_pdcp_mbs_test.h"
 #include "openair3/SECU/secu_defs.h"
 #include "openair3/SECU/key_nas_deriver.h"
 
@@ -933,6 +934,20 @@ static void nr_rrc_release_rlc_entity(NR_UE_RRC_INST_t *rrc, int id)
   }
 }
 
+/* TEMPORARY, see nr_pdcp_mbs_test.h: stands in for the MRB-ToAddMod of RadioBearerConfig (TS 38.331 §6.3.2) that the
+ * gNB-CU does not send yet. The multicast session is associated with the first PDU session (TS 23.247 §7.2.1.3) */
+static void nr_rrc_add_mbs_test_mrb(const NR_UE_RRC_INST_t *rrc, int mrb_id)
+{
+  int pdusession_id = 1;
+  while (pdusession_id <= NR_MBS_TEST_MAX_PDU_SESSION_ID && !nr_sdap_get_entity(rrc->ue_id, pdusession_id))
+    pdusession_id++;
+  if (pdusession_id > NR_MBS_TEST_MAX_PDU_SESSION_ID) {
+    RRCLOG_E("no PDU session to associate with MRB %d\n", mrb_id);
+    return;
+  }
+  nr_pdcp_add_mrb(false, rrc->ue_id, mrb_id, pdusession_id, NR_MBS_TEST_PDCP_SN_SIZE, NR_MBS_TEST_PDCP_T_REORDERING);
+}
+
 static void nr_rrc_manage_rlc_bearers(NR_UE_RRC_INST_t *rrc, const NR_CellGroupConfig_t *cellGroupConfig)
 {
   if (cellGroupConfig->rlc_BearerToReleaseList != NULL) {
@@ -954,6 +969,13 @@ static void nr_rrc_manage_rlc_bearers(NR_UE_RRC_INST_t *rrc, const NR_CellGroupC
           nr_rlc_reconfigure_entity(rrc->ue_id, lcid, rlc_bearer->rlc_Config);
       } else {
         rrc->active_RLC_entity[lcid] = true;
+        /* PTM RLC entity of a multicast MRB, identified by multicastRLC-BearerConfig instead of servedRadioBearer
+         * (TS 38.331 §6.3.2 RLC-BearerConfig) */
+        if (rlc_bearer->ext2 && rlc_bearer->ext2->multicastRLC_BearerConfig_r17) {
+          nr_rlc_add_mrb(rrc->ue_id, rlc_bearer);
+          nr_rrc_add_mbs_test_mrb(rrc, rlc_bearer->ext2->multicastRLC_BearerConfig_r17->servedMBS_RadioBearer_r17);
+          continue;
+        }
         AssertFatal(rlc_bearer->servedRadioBearer, "servedRadioBearer mandatory in case of setup\n");
         AssertFatal(rlc_bearer->servedRadioBearer->present != NR_RLC_BearerConfig__servedRadioBearer_PR_NOTHING,
                     "Invalid RB for RLC configuration\n");
@@ -1969,7 +1991,7 @@ NR_UE_RRC_INST_t* nr_rrc_init_ue(char* uecap_file, int instance_id, int num_ant_
     set_DRB_status(rrc, j, RB_NOT_PRESENT);
   // SRB0 activated by default
   rrc->Srb[0] = RB_ESTABLISHED;
-  for (int j = 0; j < NR_MAX_NUM_LCID; j++)
+  for (int j = 0; j < sizeofArray(rrc->active_RLC_entity); j++)
     rrc->active_RLC_entity[j] = false;
 
   for (int i = 0; i < NB_CNX_UE; i++) {

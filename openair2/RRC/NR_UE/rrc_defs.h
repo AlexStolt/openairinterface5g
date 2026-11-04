@@ -230,7 +230,8 @@ typedef struct NR_UE_RRC_INST_s {
 
   NR_RB_status_t Srb[NR_NUM_SRB];
   NR_RB_status_t status_DRBs[MAX_DRBS_PER_UE];
-  bool active_RLC_entity[NR_MAX_NUM_LCID];
+  // indexed by LCID, 1 to 32 for logical channels (TS 38.321 Table 6.2.1-1)
+  bool active_RLC_entity[NR_MAX_NUM_LCID + 1];
 
   /* KgNB as computed from parameters within USIM card */
   uint8_t kgnb[32];

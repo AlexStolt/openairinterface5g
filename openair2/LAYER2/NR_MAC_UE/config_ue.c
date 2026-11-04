@@ -1005,6 +1005,10 @@ static void configure_logicalChannelBearer(NR_UE_MAC_INST_t *mac,
   if (rlc_torelease_list) {
     for (int i = 0; i < rlc_torelease_list->list.count; i++) {
       long id = *rlc_torelease_list->list.array[i];
+      if (mac->mbs.mtch_lcids & (1ULL << id)) {
+        mac->mbs.mtch_lcids &= ~(1ULL << id);
+        continue;
+      }
       int j;
       for (j = 0; j < mac->lc_ordered_list.count; j++) {
         if (id == mac->lc_ordered_list.array[j]->lcid)
@@ -1020,6 +1024,12 @@ static void configure_logicalChannelBearer(NR_UE_MAC_INST_t *mac,
   if (rlc_toadd_list) {
     for (int i = 0; i < rlc_toadd_list->list.count; i++) {
       NR_RLC_BearerConfig_t *rlc_bearer = rlc_toadd_list->list.array[i];
+      /* the MTCH of a PTM RLC entity is DL only, it takes no part in UL logical channel prioritization
+       * (TS 38.321 §5.4.3.1) */
+      if (rlc_bearer->ext2 && rlc_bearer->ext2->multicastRLC_BearerConfig_r17) {
+        mac->mbs.mtch_lcids |= 1ULL << rlc_bearer->logicalChannelIdentity;
+        continue;
+      }
       nr_lcid_rb_t rb = configure_lcid_rb(rlc_bearer);
       int lc_identity = rlc_bearer->logicalChannelIdentity;
       NR_LogicalChannelConfig_t *mac_lc_config = rlc_bearer->mac_LogicalChannelConfig;
@@ -1664,6 +1674,45 @@ NR_UE_UL_BWP_t *get_ul_bwp_structure(NR_UE_MAC_INST_t *mac, int bwp_id, bool set
   return bwp;
 }
 
+/* CFR for multicast of a DL BWP (TS 38.213 §18). Without locationAndBandwidthMulticast, the CFR is the BWP, so its
+ * CORESETs are added to the ones of the BWP. The search space is the Type-3 CSS for DCI format 4_1 (TS 38.213 §10.1), as
+ * given by searchSpaceType-r17 of searchSpacesToAddModListExt-v1700, in the order of searchSpacesToAddModList */
+static void configure_cfr_multicast(NR_UE_MAC_INST_t *mac,
+                                    NR_BWP_PDCCH_t *pdcch,
+                                    const struct NR_SetupRelease_CFR_ConfigMulticast_r17 *cfr)
+{
+  if (cfr->present == NR_SetupRelease_CFR_ConfigMulticast_r17_PR_release) {
+    asn1cFreeStruc(asn_DEF_NR_SearchSpace, mac->mbs.search_space);
+    return;
+  }
+  const NR_CFR_ConfigMulticast_r17_t *setup = cfr->choice.setup;
+  if (setup->locationAndBandwidthMulticast_r17) {
+    LOG_E(NR_MAC, "CFR smaller than the BWP not supported, multicast configuration ignored\n");
+    return;
+  }
+  NR_PDCCH_Config_t *pdcch_mc = setup->pdcch_ConfigMulticast_r17;
+  if (!pdcch_mc)
+    return;
+  NR_SearchSpace_t *ss = NULL;
+  for (int i = 0; pdcch_mc->searchSpacesToAddModList && i < pdcch_mc->searchSpacesToAddModList->list.count; i++) {
+    const NR_SearchSpaceExt_v1700_t *ext = NULL;
+    if (pdcch_mc->ext2 && pdcch_mc->ext2->searchSpacesToAddModListExt_v1700
+        && i < pdcch_mc->ext2->searchSpacesToAddModListExt_v1700->list.count)
+      ext = pdcch_mc->ext2->searchSpacesToAddModListExt_v1700->list.array[i];
+    if (ext && ext->searchSpaceType_r17 && ext->searchSpaceType_r17->common_r17.dci_Format4_1_r17)
+      ss = pdcch_mc->searchSpacesToAddModList->list.array[i];
+  }
+  if (!ss) {
+    LOG_E(NR_MAC, "no search space for DCI format 4_1 in pdcch-ConfigMulticast\n");
+    return;
+  }
+  NR_PDCCH_Config_t coresets = {.controlResourceSetToAddModList = pdcch_mc->controlResourceSetToAddModList};
+  configure_ss_coreset(pdcch, &coresets);
+  asn1cFreeStruc(asn_DEF_NR_SearchSpace, mac->mbs.search_space);
+  asn_copy(&asn_DEF_NR_SearchSpace, (void **)&mac->mbs.search_space, ss);
+  LOG_I(NR_MAC, "[UE %d] configured search space %ld for DCI format 4_1\n", mac->ue_id, ss->searchSpaceId);
+}
+
 static void configure_dedicated_BWP_dl(NR_UE_MAC_INST_t *mac, int bwp_id, NR_BWP_DownlinkDedicated_t *dl_dedicated)
 {
   if (dl_dedicated) {
@@ -1687,6 +1736,8 @@ static void configure_dedicated_BWP_dl(NR_UE_MAC_INST_t *mac, int bwp_id, NR_BWP
       if (dl_dedicated->pdcch_Config->present == NR_SetupRelease_PDCCH_Config_PR_setup)
         configure_ss_coreset(pdcch, dl_dedicated->pdcch_Config->choice.setup);
     }
+    if (dl_dedicated->ext2 && dl_dedicated->ext2->cfr_ConfigMulticast_r17)
+      configure_cfr_multicast(mac, pdcch, dl_dedicated->ext2->cfr_ConfigMulticast_r17);
     AssertFatal(!dl_dedicated->sps_Config, "SPS handling not implemented\n");
   }
 }
@@ -2444,6 +2495,59 @@ static uint32_t get_data_inactivity_timer(long setup)
   return timer_s;
 }
 
+/* G-RNTIs for multicast of MAC-CellGroupConfig (TS 38.331 §6.3.2) */
+static void configure_g_rnti(NR_UE_MAC_INST_t *mac,
+                             const struct NR_MAC_CellGroupConfig__ext4__g_RNTI_ConfigToAddModList_r17 *add_list,
+                             const struct NR_MAC_CellGroupConfig__ext4__g_RNTI_ConfigToReleaseList_r17 *release_list)
+{
+  for (int i = 0; release_list && i < release_list->list.count; i++) {
+    const long id = *release_list->list.array[i];
+    for (int j = 0; j < mac->mbs.num_g_rnti; j++) {
+      if (mac->mbs.config_id[j] == id) {
+        mac->mbs.num_g_rnti--;
+        mac->mbs.g_rnti[j] = mac->mbs.g_rnti[mac->mbs.num_g_rnti];
+        mac->mbs.config_id[j] = mac->mbs.config_id[mac->mbs.num_g_rnti];
+        mac->mbs.harq_feedback[j] = mac->mbs.harq_feedback[mac->mbs.num_g_rnti];
+        break;
+      }
+    }
+  }
+  for (int i = 0; add_list && i < add_list->list.count; i++) {
+    const NR_MBS_RNTI_SpecificConfig_r17_t *cfg = add_list->list.array[i];
+    if (cfg->groupCommon_RNTI_r17.present != NR_MBS_RNTI_SpecificConfig_r17__groupCommon_RNTI_r17_PR_g_RNTI) {
+      LOG_E(NR_MAC,
+            "G-CS-RNTI (multicast SPS) not supported, MBS-RNTI-SpecificConfig %ld ignored\n",
+            cfg->mbs_RNTI_SpecificConfigId_r17);
+      continue;
+    }
+    /* TS 38.213 §18: HARQ-ACK of PDSCH receptions scheduled by DCI format 4_1 with harq-FeedbackEnablerMulticast
+     * 'enabled' or 'dci-enabler', in the first (ack-nack) or second (nack-only) HARQ-ACK reporting mode */
+    const bool harq_feedback = cfg->harq_FeedbackEnablerMulticast_r17 != NULL;
+    const long *option = cfg->harq_FeedbackOptionMulticast_r17;
+    if (harq_feedback && (!option || *option != NR_MBS_RNTI_SpecificConfig_r17__harq_FeedbackOptionMulticast_r17_ack_nack)) {
+      LOG_E(NR_MAC,
+            "NACK-only HARQ-ACK for multicast not supported, G-RNTI %04lx ignored\n",
+            cfg->groupCommon_RNTI_r17.choice.g_RNTI);
+      continue;
+    }
+    int j = 0;
+    while (j < mac->mbs.num_g_rnti && mac->mbs.config_id[j] != cfg->mbs_RNTI_SpecificConfigId_r17)
+      j++;
+    if (j == mac->mbs.num_g_rnti) {
+      AssertFatal(j < NR_MAX_G_RNTI, "more than %d G-RNTIs configured\n", NR_MAX_G_RNTI);
+      mac->mbs.num_g_rnti++;
+    }
+    mac->mbs.config_id[j] = cfg->mbs_RNTI_SpecificConfigId_r17;
+    mac->mbs.g_rnti[j] = cfg->groupCommon_RNTI_r17.choice.g_RNTI;
+    mac->mbs.harq_feedback[j] = harq_feedback;
+    LOG_I(NR_MAC,
+          "[UE %d] configured G-RNTI %04x for multicast, HARQ-ACK %s\n",
+          mac->ue_id,
+          mac->mbs.g_rnti[j],
+          harq_feedback ? "ack-nack" : "disabled");
+  }
+}
+
 static void configure_maccellgroup(NR_UE_MAC_INST_t *mac, const NR_MAC_CellGroupConfig_t *mcg)
 {
   NR_UE_SCHEDULING_INFO *si = &mac->scheduling_info;
@@ -2554,6 +2658,9 @@ static void configure_maccellgroup(NR_UE_MAC_INST_t *mac, const NR_MAC_CellGroup
       nr_timer_setup(mac->data_inactivity_timer, (timer_s * 1000) << scs, 1); // 1 slot update rate
     }
   }
+
+  if (mcg->ext4)
+    configure_g_rnti(mac, mcg->ext4->g_RNTI_ConfigToAddModList_r17, mcg->ext4->g_RNTI_ConfigToReleaseList_r17);
 }
 
 static void configure_csirs_resource(NR_NZP_CSI_RS_Resource_t *target, NR_NZP_CSI_RS_Resource_t *source)

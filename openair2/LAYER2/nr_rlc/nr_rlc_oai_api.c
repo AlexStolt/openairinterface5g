@@ -73,6 +73,11 @@ static void release_rlc_entity_from_lcid(nr_rlc_ue_t *ue, logical_chan_id_t chan
     }
     else
       LOG_E(RLC, "Trying to release a non-established enity with LCID %d\n", channel_id);
+  } else if (rb->type == NR_LCID_MRB) {
+    if (ue->mrb[channel_id - 1]) {
+      ue->mrb[channel_id - 1]->delete_entity(ue->mrb[channel_id - 1]);
+      ue->mrb[channel_id - 1] = NULL;
+    }
   }
   else {
     AssertFatal(rb->type == NR_LCID_DRB,
@@ -120,6 +125,8 @@ static nr_rlc_entity_t *get_rlc_entity_from_lcid(nr_rlc_ue_t *ue, logical_chan_i
   if (rb->type == NR_LCID_SRB) {
     AssertFatal(rb->choice.srb_id > 0, "logic bug: impossible to have srb0 here\n");
     return ue->srb[rb->choice.srb_id - 1];
+  } else if (rb->type == NR_LCID_MRB) {
+    return ue->mrb[channel_id - 1];
   } else {
     AssertFatal(rb->type == NR_LCID_DRB,
                 "Invalid RB type\n");
@@ -433,6 +440,17 @@ static void deliver_sdu(void *_ue, nr_rlc_entity_t *entity, char *buf, int size)
       is_srb = 0;
       rb_id = i+1;
       goto rb_found;
+    }
+  }
+
+  /* maybe MRB? MTCH is only received, by UEs */
+  for (i = 0; i < sizeofArray(ue->mrb); i++) {
+    if (entity == ue->mrb[i]) {
+      memblock = malloc16(size);
+      AssertFatal(memblock, "out of memory\n");
+      memcpy(memblock, buf, size);
+      nr_pdcp_mrb_data_ind(ue->ue_id, ue->lcid2rb[i].choice.mrb_id, size, memblock);
+      return;
     }
   }
 
@@ -907,6 +925,52 @@ void nr_rlc_add_drb(int ue_id, int drb_id, const NR_RLC_BearerConfig_t *rlc_Bear
     exit(1);
   }
   LOG_I(RLC, "Added DRB to UE %d\n", ue_id);
+}
+
+void nr_rlc_add_mrb(int ue_id, const NR_RLC_BearerConfig_t *rlc_BearerConfig)
+{
+  /* TS 38.322 §4.2.1.2.1: the MTCH of the PTM leg of a multicast MRB is carried by a UM RLC entity, transmitting in the
+   * gNB and receiving in the UEs, configured with um-Uni-Directional-DL and multicastRLC-BearerConfig-r17
+   * (TS 38.331 §6.3.2) */
+  AssertFatal(rlc_BearerConfig->ext2 && rlc_BearerConfig->ext2->multicastRLC_BearerConfig_r17,
+              "multicastRLC-BearerConfig mandatory present when setting up a PTM RLC entity\n");
+  const struct NR_RLC_Config *r = rlc_BearerConfig->rlc_Config;
+  AssertFatal(r && r->present == NR_RLC_Config_PR_um_Uni_Directional_DL, "PTM RLC entity of an MRB must be UM DL\n");
+  const int mrb_id = rlc_BearerConfig->ext2->multicastRLC_BearerConfig_r17->servedMBS_RadioBearer_r17;
+  const NR_DL_UM_RLC_t *dl_um = &r->choice.um_Uni_Directional_DL->dl_UM_RLC;
+  const int t_reassembly = decode_t_reassembly(dl_um->t_Reassembly);
+  const int sn_field_length = decode_sn_field_length_um(*dl_um->sn_FieldLength);
+  const logical_chan_id_t lcid = rlc_BearerConfig->logicalChannelIdentity;
+
+  nr_rlc_manager_lock(nr_rlc_ue_manager);
+  nr_rlc_ue_t *ue = nr_rlc_manager_get_ue(nr_rlc_ue_manager, ue_id);
+  if (ue->mrb[lcid - 1] != NULL) {
+    LOG_W(RLC, "%04x: MRB %d already exists on LCID %d, do nothing\n", ue_id, mrb_id, lcid);
+  } else {
+    ue->lcid2rb[lcid - 1].type = NR_LCID_MRB;
+    ue->lcid2rb[lcid - 1].choice.mrb_id = mrb_id;
+    ue->mrb[lcid - 1] = new_nr_rlc_entity_um(RLC_RX_MAXSIZE, RLC_TX_MAXSIZE, deliver_sdu, ue, t_reassembly, sn_field_length);
+    LOG_I(RLC, "%04x: added PTM RLC entity of MRB %d on LCID %d\n", ue_id, mrb_id, lcid);
+  }
+  nr_rlc_manager_unlock(nr_rlc_ue_manager);
+}
+
+void nr_rlc_mrb_recv_sdu(int ue_id, int mrb_id, const uint8_t *buf, int size)
+{
+  nr_rlc_manager_lock(nr_rlc_ue_manager);
+  nr_rlc_ue_t *ue = nr_rlc_manager_get_ue(nr_rlc_ue_manager, ue_id);
+  nr_rlc_entity_t *rb = NULL;
+  for (int i = 0; i < sizeofArray(ue->lcid2rb) && !rb; i++) {
+    if (ue->lcid2rb[i].type == NR_LCID_MRB && ue->lcid2rb[i].choice.mrb_id == mrb_id)
+      rb = ue->mrb[i];
+  }
+  if (rb) {
+    rb->set_time(rb, get_nr_rlc_current_time());
+    rb->recv_sdu(rb, (char *)buf, size, -1);
+  } else {
+    LOG_E(RLC, "%04x: SDU for unknown MRB %d dropped\n", ue_id, mrb_id);
+  }
+  nr_rlc_manager_unlock(nr_rlc_ue_manager);
 }
 
 struct srb0_data {

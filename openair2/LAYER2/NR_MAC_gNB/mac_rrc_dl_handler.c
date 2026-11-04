@@ -1068,6 +1068,11 @@ void ue_context_modification_refuse(const f1ap_ue_context_modif_refuse_t *refuse
    * unconfigured state. Therefore, we just free all RA-related info, and
    * request the release of the UE.  */
   bool release = UE->cm_info.trigger_info == MSG3_CRNTI;
+  /* the UE will not receive the configuration of the multicast session it joined */
+  if (UE->cm_info.trigger_info == MBS_JOIN) {
+    for (nr_mbs_group_t **g = mac->UE_info.mbs_group_list; *g; g++)
+      nr_mac_remove_mbs_member(mac, *g, UE);
+  }
   ASN_STRUCT_FREE(asn_DEF_NR_CellGroupConfig, UE->reconfigCellGroup);
   UE->reconfigCellGroup = NULL;
   UE->cm_info.trigger_info = NO_TRIGGER;

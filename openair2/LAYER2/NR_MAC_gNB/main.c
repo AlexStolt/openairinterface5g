@@ -299,6 +299,7 @@ gNB_MAC_INST *mac_top_init_gNB(ngran_node_t node_type, const nr_rlc_configuratio
   nrmac->ul_rb_alloc = nr_ul_proportional_fair;
 
   nrmac->dl_lcid_alloc = nr_dl_lcid_alloc_default;
+  nrmac->mbs_mcs_select = nr_mbs_mcs_select_default;
 
   if (get_softmodem_params()->phy_test) {
     nrmac->pre_processor_dl = nr_preprocessor_phytest;

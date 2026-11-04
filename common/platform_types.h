@@ -191,13 +191,14 @@ typedef struct nsa_msg_t {
   uint8_t msg_buffer[MAX_MESSAGE_SIZE];
 } nsa_msg_t;
 
-typedef enum nr_lcid_rb_type { NR_LCID_NONE = 0, NR_LCID_SRB = 1, NR_LCID_DRB = 2 } nr_lcid_rb_type;
+typedef enum nr_lcid_rb_type { NR_LCID_NONE = 0, NR_LCID_SRB = 1, NR_LCID_DRB = 2, NR_LCID_MRB = 3 } nr_lcid_rb_type;
 
 typedef struct nr_lcid_rb_t {
   nr_lcid_rb_type type;
   union {
     int srb_id;
     int drb_id;
+    int mrb_id;
   } choice;
 } nr_lcid_rb_t;
 

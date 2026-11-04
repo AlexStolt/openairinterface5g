@@ -232,7 +232,9 @@ void update_harq_status(NR_UE_MAC_INST_t *mac, uint8_t harq_pid, int cw_idx, uin
       current_harq->ack_received = true;
     }
   }
-  else if (!get_FeedbackDisabled(mac->sc_info.downlinkHARQ_FeedbackDisabled_r17, harq_pid)) {
+  // PTM transport blocks have no HARQ-ACK without harq-FeedbackEnablerMulticast (TS 38.213 §18)
+  else if (!get_FeedbackDisabled(mac->sc_info.downlinkHARQ_FeedbackDisabled_r17, harq_pid)
+           && !nr_ue_is_g_rnti(mac, current_harq->last_rnti)) {
     //shouldn't get here
     LOG_E(NR_MAC, "Trying to process acknack for an inactive harq process (%d)\n", harq_pid);
   }
@@ -268,7 +270,7 @@ static uint32_t nr_ue_dl_processing(NR_UE_MAC_INST_t *mac, nr_downlink_indicatio
       nr_dci_format_t dci_format = handle_dci(mac, dl_info->frame, dl_info->slot, dl_info->dci_ind->dci_list + i);
 
       /* The check below filters out UL_DCIs which are being processed as DL_DCIs. */
-      if (dci_format != NR_DL_DCI_FORMAT_1_0 && dci_format != NR_DL_DCI_FORMAT_1_1) {
+      if (dci_format != NR_DL_DCI_FORMAT_1_0 && dci_format != NR_DL_DCI_FORMAT_1_1 && dci_format != NR_DL_DCI_FORMAT_4_1) {
         LOG_D(NR_MAC, "We are filtering a UL_DCI to prevent it from being treated like a DL_DCI\n");
         continue;
       }

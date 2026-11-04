@@ -27,8 +27,6 @@
 #define WORD 32
 //#define SIZE_OF_POINTER sizeof (void *)
 
-#define MAX_NUM_DATA_REQ 1024
-
 int get_dl_tda(const gNB_MAC_INST *nrmac, const nr_cell_sched_t *cell, int slot)
 {
   /* we assume that this function is mutex-protected from outside */
@@ -345,8 +343,10 @@ void finish_nr_dl_harq(NR_UE_sched_ctrl_t *sched_ctrl, int harq_pid)
 
   harq->ndi ^= 1;
   harq->round = 0;
+  harq->ptm_tbslbrm = 0;
 
-  add_tail_nr_list(&sched_ctrl->available_dl_harq, harq_pid);
+  if (!(sched_ctrl->ptm_dl_harq_mask & (1U << harq_pid)))
+    add_tail_nr_list(&sched_ctrl->available_dl_harq, harq_pid);
 }
 
 void abort_nr_dl_harq(NR_UE_info_t* UE, int8_t harq_pid)
@@ -458,6 +458,9 @@ static int collect_dl_candidates(nr_cell_sched_t *cell,
 
     NR_UE_sched_ctrl_t *sched_ctrl = &UE->UE_sched_ctrl;
     NR_UE_DL_BWP_t *current_BWP = &UE->current_DL_BWP;
+    /* TS 38.214 §5.1: one PDSCH per slot, a PTM PDSCH of the groups of the UE is scheduled in this slot */
+    if (sched_ctrl->ptm_dl_harq_mask && sched_ctrl->ptm_pdsch_frame == frame && sched_ctrl->ptm_pdsch_slot == slot)
+      continue;
 
     /* Check TA */
     if (frame == sched_ctrl->ta_frame)
@@ -699,6 +702,14 @@ bool commit_alloc(const nr_dl_sched_params_t *params, nr_dl_candidate_t *cand)
   return true;
 }
 
+/* TS 38.214 §5.1.3.1: MCS index of a retransmission indicating only the modulation order, the TBS being the one of the
+ * initial transmission (§5.1.3.2), e.g., for the PTP retransmission of a TB first sent with DCI format 4_1 */
+static int get_retx_mcs(int Qm, int mcs_table)
+{
+  const int first_reserved_mcs = mcs_table == 1 ? 28 : 29;
+  return first_reserved_mcs + Qm / 2 - 1;
+}
+
 static bool check_increase_mcs(const NR_sched_pdsch_t *sched_pdsch, int bytes_in_buffer, int limit_mcs)
 {
   // only in case we need to check ACK for reconfig
@@ -824,6 +835,8 @@ static void nr_dl_schedule(gNB_MAC_INST *mac,
        * DMRS must match the current TDA (recomputed by dl_tda_select when TDA
        * changed; original otherwise). */
       NR_sched_pdsch_t harq_pdsch = sched_ctrl->harq_processes[cand->retx_harq_pid].sched_pdsch;
+      /* PTP retransmission of a TB first sent by PTM, with the PDSCH configuration of the UE */
+      const bool ptm_tb = sched_ctrl->harq_processes[cand->retx_harq_pid].ptm_tbslbrm > 0;
       sched_pdsch.R = harq_pdsch.R;
       sched_pdsch.Qm = harq_pdsch.Qm;
       sched_pdsch.tb_size = harq_pdsch.tb_size;
@@ -831,10 +844,12 @@ static void nr_dl_schedule(gNB_MAC_INST *mac,
       sched_pdsch.ant_port_idx = harq_pdsch.ant_port_idx;
       bool tda_changed = sched_pdsch.tda_info.startSymbolIndex != harq_pdsch.tda_info.startSymbolIndex
                          || sched_pdsch.tda_info.nrOfSymbols != harq_pdsch.tda_info.nrOfSymbols;
-      if (tda_changed)
+      if (tda_changed || ptm_tb)
         sched_pdsch.dmrs_parms = get_dl_dmrs_params(scc, dl_bwp, &sched_pdsch.tda_info, sched_pdsch.nrOfLayers);
       else
         sched_pdsch.dmrs_parms = harq_pdsch.dmrs_parms;
+      if (ptm_tb)
+        sched_pdsch.mcs = get_retx_mcs(harq_pdsch.Qm, dl_bwp->mcsTableIdx);
     } else {
       /* New transmission: compute TBS-related fields */
       int l = sched_pdsch.nrOfLayers;
@@ -1210,12 +1225,7 @@ static void generate_dl_mac_pdu(gNB_MAC_INST *mac,
   }
 }
 
-static void fill_dl_tx_request(post_process_pdsch_t *pdsch,
-                               const uint8_t *buf,
-                               int pduindex,
-                               uint32_t TBS,
-                               frame_t frame,
-                               slot_t slot)
+void fill_dl_tx_request(post_process_pdsch_t *pdsch, const uint8_t *buf, int pduindex, uint32_t TBS, frame_t frame, slot_t slot)
 {
   const int ntx_req = pdsch->TX_req->Number_of_PDUs;
   nfapi_nr_pdu_t *tx_req = &pdsch->TX_req->pdu_list[ntx_req];
@@ -1342,6 +1352,9 @@ void post_process_dlsch(gNB_MAC_INST *nr_mac,
                                                                    fapi_beam,
                                                                    nl_tbslbrm,
                                                                    pduindex);
+  /* TS 38.212 §5.4.2.1: the PTP retransmission of a TB first sent by PTM keeps its LBRM */
+  if (harq->ptm_tbslbrm)
+    pdsch_pdu->maintenance_parms_v3.tbSizeLbrmBytes = harq->ptm_tbslbrm;
 
   LOG_D(NR_MAC, "Configuring DCI/PDCCH in %d.%d at CCE %d, rnti %x\n", frame, slot, sched_ctrl->cce_index, rnti);
   /* Fill PDCCH DL DCI PDU */

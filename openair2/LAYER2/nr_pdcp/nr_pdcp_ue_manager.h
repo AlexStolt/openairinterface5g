@@ -9,12 +9,17 @@
 #include "common/platform_constants.h"
 #include "common/platform_types.h"
 
+/* MRBs per context: one MBS session in the gNB, the multicast sessions joined by a UE */
+#define NR_PDCP_MAX_MRBS 16
+
 typedef void nr_pdcp_ue_manager_t;
 
 typedef struct nr_pdcp_ue_t {
   ue_id_t ue_id;
   nr_pdcp_entity_t *srb[3];
   nr_pdcp_entity_t *drb[MAX_DRBS_PER_UE];
+  /// multicast MRBs, identified by their rb_id (MRB-Identity)
+  nr_pdcp_entity_t *mrb[NR_PDCP_MAX_MRBS];
 } nr_pdcp_ue_t;
 
 /***********************************************************************/

@@ -2161,6 +2161,46 @@ void fill_dci_pdu_rel15(const NR_UE_ServingCell_Info_t *servingCellInfo,
     }
     break;
 
+  case NR_DL_DCI_FORMAT_4_1:
+    /* TS 38.212 §7.3.1.5.2: pack MSB-first in the order of the field description, reserved bits are left to 0 */
+    AssertFatal(rnti_type == TYPE_G_RNTI_, "DCI format 4_1 is only scrambled by G-RNTI, not %s\n", rnti_types(rnti_type));
+    fsize = dci_pdu_rel15->frequency_domain_assignment.nbits;
+    *dci_pdu |= (dci_pdu_rel15->frequency_domain_assignment.val & ((1U << fsize) - 1)) * (1ULL << (dci_size - pos - fsize));
+    pos += fsize;
+    *dci_pdu |= (dci_pdu_rel15->time_domain_assignment.val & 0xf) * (1ULL << (dci_size - pos - 4));
+    pos += 4;
+    *dci_pdu |= (dci_pdu_rel15->vrb_to_prb_mapping.val & 1) * (1ULL << (dci_size - pos - 1));
+    pos += 1;
+    *dci_pdu |= (dci_pdu_rel15->mcs & 0x1f) * (1ULL << (dci_size - pos - 5));
+    pos += 5;
+    *dci_pdu |= (dci_pdu_rel15->ndi & 1) * (1ULL << (dci_size - pos - 1));
+    pos += 1;
+    *dci_pdu |= (dci_pdu_rel15->rv & 0x3) * (1ULL << (dci_size - pos - 2));
+    pos += 2;
+    *dci_pdu |= (dci_pdu_rel15->harq_pid.val & 0xf) * (1ULL << (dci_size - pos - 4));
+    pos += 4;
+    *dci_pdu |= (dci_pdu_rel15->dai[0].val & 0x3) * (1ULL << (dci_size - pos - 2));
+    pos += 2;
+    *dci_pdu |= (dci_pdu_rel15->pucch_resource_indicator & 0x7) * (1ULL << (dci_size - pos - 3));
+    pos += 3;
+    *dci_pdu |= (dci_pdu_rel15->pdsch_to_harq_feedback_timing_indicator.val & 0x7) * (1ULL << (dci_size - pos - 3));
+    pos += 3;
+    DevAssert(dci_size - pos == NR_DCI_FORMAT_4_1_RESERVED_BITS);
+    LOG_D(NR_MAC,
+          "G-RNTI DCI 4_1 packed: size %d payload 0x%lx FDA %u TDA %u mcs %u ndi %u rv %u pid %u dai %u pri %u k1 %u\n",
+          dci_size,
+          *dci_pdu,
+          dci_pdu_rel15->frequency_domain_assignment.val,
+          dci_pdu_rel15->time_domain_assignment.val,
+          dci_pdu_rel15->mcs,
+          dci_pdu_rel15->ndi,
+          dci_pdu_rel15->rv,
+          dci_pdu_rel15->harq_pid.val,
+          dci_pdu_rel15->dai[0].val,
+          dci_pdu_rel15->pucch_resource_indicator,
+          dci_pdu_rel15->pdsch_to_harq_feedback_timing_indicator.val);
+    break;
+
   case NR_UL_DCI_FORMAT_0_0:
     switch (rnti_type) {
       case TYPE_C_RNTI_:
@@ -2837,7 +2877,8 @@ static void create_dl_harq_list(NR_UE_sched_ctrl_t *sched_ctrl, const NR_UE_Serv
   if (sched_ctrl->available_dl_harq.len == 0) {
     create_nr_list(&sched_ctrl->available_dl_harq, nrofHARQ);
     for (int harq = 0; harq < nrofHARQ; harq++)
-      add_tail_nr_list(&sched_ctrl->available_dl_harq, harq);
+      if (!(sched_ctrl->ptm_dl_harq_mask & (1U << harq)))
+        add_tail_nr_list(&sched_ctrl->available_dl_harq, harq);
     create_nr_list(&sched_ctrl->feedback_dl_harq, nrofHARQ);
     create_nr_list(&sched_ctrl->retrans_dl_harq, nrofHARQ);
   } else if (sched_ctrl->available_dl_harq.len == nrofHARQ) {
@@ -2849,7 +2890,8 @@ static void create_dl_harq_list(NR_UE_sched_ctrl_t *sched_ctrl, const NR_UE_Serv
                 nrofHARQ, old_nrofHARQ);
     resize_nr_list(&sched_ctrl->available_dl_harq, nrofHARQ);
     for (int harq = old_nrofHARQ; harq < nrofHARQ; harq++)
-      add_tail_nr_list(&sched_ctrl->available_dl_harq, harq);
+      if (!(sched_ctrl->ptm_dl_harq_mask & (1U << harq)))
+        add_tail_nr_list(&sched_ctrl->available_dl_harq, harq);
     resize_nr_list(&sched_ctrl->feedback_dl_harq, nrofHARQ);
     resize_nr_list(&sched_ctrl->retrans_dl_harq, nrofHARQ);
   }
@@ -3409,8 +3451,12 @@ void mac_remove_nr_ue(gNB_MAC_INST *nr_mac, rnti_t rnti)
 {
   NR_UEs_t *UE_info = &nr_mac->UE_info;
   NR_UE_info_t *UE = remove_connected_nr_ue(UE_info, rnti);
-  if (!UE)
+  if (UE) {
+    for (nr_mbs_group_t **g = UE_info->mbs_group_list; *g; g++)
+      nr_mac_remove_mbs_member(nr_mac, *g, UE);
+  } else {
     UE = remove_ra_ue(UE_info, rnti);
+  }
   if (UE)
     release_nr_ue_inst(&nr_mac->UE_info.uid_allocator, UE);
 }
@@ -4456,7 +4502,13 @@ void nr_mac_trigger_reconfiguration(const gNB_MAC_INST *nrmac, nr_cell_sched_t *
     }
   } else
     UE->cm_info.trigger_info = MSG3_CRNTI;
+  nr_mac_request_reconfiguration(nrmac, UE, cellGroup_for_UE);
+}
 
+/** @brief Sends cellGroup_for_UE (or the current CellGroupConfig if NULL) to the gNB-CU in UE Context Modification
+ * Required (TS 38.473 §8.3.5) for an RRCReconfiguration; cellGroup_for_UE is applied when the UE acknowledges it */
+void nr_mac_request_reconfiguration(const gNB_MAC_INST *nrmac, NR_UE_info_t *UE, NR_CellGroupConfig_t *cellGroup_for_UE)
+{
   uint8_t buf[2048];
   asn_enc_rval_t enc_rval = uper_encode_to_buffer(&asn_DEF_NR_CellGroupConfig,
                                                   NULL,
@@ -4555,12 +4607,14 @@ bool nr_mac_get_new_rnti(NR_UEs_t *UEs, rnti_t *rnti)
 {
   int loop = 0;
   bool exist_connected_ue, exist_in_pending_ra_ue;
+  bool exist_mbs_group;
   do {
     *rnti = (taus() % 0xffef) + 1;
     exist_connected_ue = find_connected_nr_ue(UEs, *rnti) != NULL;
     exist_in_pending_ra_ue = find_ra_ue(UEs, *rnti) != NULL;
+    exist_mbs_group = find_mbs_group(UEs, *rnti) != NULL;
     loop++;
-  } while (loop < 100 && (exist_connected_ue || exist_in_pending_ra_ue));
+  } while (loop < 100 && (exist_connected_ue || exist_in_pending_ra_ue || exist_mbs_group));
   return loop < 100; // nothing found: loop count 100
 }
 

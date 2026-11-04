@@ -327,3 +327,30 @@ void nr_dl_lcid_alloc_default(const gNB_MAC_INST *mac,
   for (int lcid = 0; lcid < NR_MAX_NUM_LCID; lcid++)
     lcid_alloc[lcid] = candidate->pending_bytes_per_lcid[lcid];
 }
+
+/* PTM MCS: the highest MCS of Table 5.1.3.1-1 (DCI format 4_1 without mcs-Table in pdsch-ConfigMulticast,
+ * TS 38.214 §5.1.3.1) whose spectral efficiency does not exceed the one supported by the weakest member, so that every
+ * member can decode the PTM transmission. A member supports the MCS derived from its wideband CQI (TS 38.214 §5.2.2.1,
+ * target BLER 0.1) if it reported CSI, otherwise its BLER-adapted unicast MCS */
+int nr_mbs_mcs_select_default(const nr_cell_sched_t *cell,
+                              const nr_mbs_group_t *group,
+                              NR_UE_info_t *const *members,
+                              int n_members)
+{
+  (void)group;
+  const NR_bler_options_t *bo = &cell->dl_bler;
+  const int ptm_mcs_table = 0;
+  const int max_mcs = min(bo->max_mcs, 28);
+  uint32_t min_se = UINT32_MAX;
+  for (int i = 0; i < n_members; i++) {
+    const NR_UE_sched_ctrl_t *sched_ctrl = &members[i]->UE_sched_ctrl;
+    const bool cqi_reported = sched_ctrl->CSI_report.cri_ri_li_pmi_cqi_report.wb_cqi_1tb > 0;
+    const int mcs = cqi_reported ? sched_ctrl->dl_max_mcs : sched_ctrl->dl_bler_stats.mcs;
+    const int table = members[i]->current_DL_BWP.mcsTableIdx;
+    min_se = min(min_se, (uint32_t)nr_get_code_rate_dl(mcs, table) * nr_get_Qm_dl(mcs, table));
+  }
+  int mcs = bo->min_mcs;
+  while (mcs < max_mcs && (uint32_t)nr_get_code_rate_dl(mcs + 1, ptm_mcs_table) * nr_get_Qm_dl(mcs + 1, ptm_mcs_table) <= min_se)
+    mcs++;
+  return mcs;
+}

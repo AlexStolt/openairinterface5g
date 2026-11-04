@@ -145,7 +145,11 @@ static void config_dci_pdu(NR_UE_MAC_INST_t *mac,
 
   int temp_num_dci_options = (mac->ra.ra_state == nrRA_WAIT_RAR || rnti_type == TYPE_SI_RNTI_) ? 1 : 2;
   int dci_format[2] = {0};
-  if (ss->searchSpaceType->present == NR_SearchSpace__searchSpaceType_PR_ue_Specific) {
+  if (rnti_type == TYPE_G_RNTI_) {
+    // Type-3 CSS of pdcch-ConfigMulticast configured for DCI format 4_1 only
+    temp_num_dci_options = 1;
+    dci_format[0] = NR_DL_DCI_FORMAT_4_1;
+  } else if (ss->searchSpaceType->present == NR_SearchSpace__searchSpaceType_PR_ue_Specific) {
     if (ss->searchSpaceType->choice.ue_Specific->dci_Formats ==
         NR_SearchSpace__searchSpaceType__ue_Specific__dci_Formats_formats0_0_And_1_0) {
       dci_format[0] = NR_DL_DCI_FORMAT_1_0;
@@ -170,6 +174,8 @@ static void config_dci_pdu(NR_UE_MAC_INST_t *mac,
     rel15->ss_type_options[i] = ss->searchSpaceType->present;
     if (dci_format[i] == NR_DL_DCI_FORMAT_1_0 || dci_format[i] == NR_UL_DCI_FORMAT_0_0)
       rel15->dci_format_options[i] = NFAPI_NR_FORMAT_0_0_AND_1_0;
+    else if (dci_format[i] == NR_DL_DCI_FORMAT_4_1)
+      rel15->dci_format_options[i] = NFAPI_NR_FORMAT_4_1;
     else
       rel15->dci_format_options[i] = NFAPI_NR_FORMAT_0_1_AND_1_1;
     uint16_t alt_size = 0;
@@ -220,10 +226,10 @@ static void config_dci_pdu(NR_UE_MAC_INST_t *mac,
 
   // DCI 0_0 and 1_0 are same size, L1 just needs to look for 1 option
   // L2 decides format based on format indicator in payload
-  if (rel15->dci_format_options[0] == NFAPI_NR_FORMAT_0_0_AND_1_0)
-    rel15->num_dci_options = 1;
-  else
+  if (rel15->dci_format_options[0] == NFAPI_NR_FORMAT_0_1_AND_1_1)
     rel15->num_dci_options = 2;
+  else
+    rel15->num_dci_options = 1;
 
   rel15->BWPStart = coreset_id == 0 ? mac->type0_PDCCH_CSS_config.cset_start_rb : current_DL_BWP->BWPStart;
   rel15->BWPSize = coreset_id == 0 ? mac->type0_PDCCH_CSS_config.num_rbs : current_DL_BWP->BWPSize;
@@ -290,6 +296,11 @@ static void config_dci_pdu(NR_UE_MAC_INST_t *mac,
       break;
     case TYPE_TPC_SRS_RNTI_:
       break;
+    case TYPE_G_RNTI_:
+      // the CFR has the SCS and CP of its DL BWP (TS 38.213 §18), the G-RNTI is set by config_dci_pdu_g_rnti()
+      sps = current_DL_BWP->cyclicprefix ? 12 : 14;
+      rel15->SubcarrierSpacing = current_DL_BWP->scs;
+      break;
     default:
       break;
   }
@@ -323,6 +334,19 @@ static void config_dci_pdu(NR_UE_MAC_INST_t *mac,
   // add DCI
   dl_config->dl_config_list[dl_config->number_pdus].pdu_type = FAPI_NR_DL_CONFIG_TYPE_DCI;
   dl_config->number_pdus += 1;
+}
+
+/* the PDCCH candidates of a CSS do not depend on the RNTI (TS 38.213 §10.1), only the CRC check does */
+static void config_dci_pdu_g_rnti(NR_UE_MAC_INST_t *mac,
+                                  fapi_nr_dl_config_request_t *dl_config,
+                                  rnti_t g_rnti,
+                                  const int slot,
+                                  const NR_SearchSpace_t *ss)
+{
+  const int pdu_idx = dl_config->number_pdus;
+  config_dci_pdu(mac, dl_config, TYPE_G_RNTI_, slot, ss);
+  if (dl_config->number_pdus > pdu_idx)
+    dl_config->dl_config_list[pdu_idx].dci_config_pdu.dci_config_rel15.rnti = g_rnti;
 }
 
 bool is_ss_monitor_occasion(const int frame, const int slot, const int slots_per_frame, const NR_SearchSpace_t *ss)
@@ -636,6 +660,12 @@ void ue_dci_configuration(NR_UE_MAC_INST_t *mac, fapi_nr_dl_config_request_t *dl
         css = mac->search_space_zero;
       AssertFatal(css, "Atleast one CSS should be present in connected state\n");
       config_dci_pdu(mac, dl_config, TYPE_C_RNTI_, slot, css);
+    }
+    // TS 38.213 §10.1: Type-3 CSS of pdcch-ConfigMulticast for DCI format 4_1 with CRC scrambled by G-RNTI
+    const NR_SearchSpace_t *mbs_ss = mac->mbs.search_space;
+    if (mbs_ss && is_ss_monitor_occasion(frame, slot, slots_per_frame, mbs_ss)) {
+      for (int i = 0; i < mac->mbs.num_g_rnti; i++)
+        config_dci_pdu_g_rnti(mac, dl_config, mac->mbs.g_rnti[i], slot, mbs_ss);
     }
   } else if (mac->state == UE_IDLE) {
     /* UE_IDLE (RRC-triggered camped idle) monitors pagingSearchSpace per TS 38.213 §10.1 and TS 38.304 §7.1. */

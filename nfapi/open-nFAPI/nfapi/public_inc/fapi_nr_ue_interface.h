@@ -38,6 +38,7 @@ typedef enum {
 typedef enum {
   NFAPI_NR_FORMAT_0_0_AND_1_0,
   NFAPI_NR_FORMAT_0_1_AND_1_1,
+  NFAPI_NR_FORMAT_4_1,
 } nfapi_nr_dci_formats_e;
 
 typedef enum {

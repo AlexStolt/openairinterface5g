@@ -461,6 +461,9 @@ typedef struct NR_sched_pucch {
   int csi_bits;
   bool simultaneous_harqcsi;
   uint8_t dai_c;
+  /// HARQ-ACK bits of the multicast codebook of g_rnti_mc, after the dai_c bits of the unicast one (TS 38.213 §9.1.3.1)
+  uint8_t dai_c_mc;
+  rnti_t g_rnti_mc;
   uint8_t timing_indicator;
   uint8_t resource_indicator;
   int r_pucch;
@@ -588,6 +591,10 @@ typedef struct NR_UE_harq {
   bool start_tci_timer;
   /// sched_pdsch keeps information on MCS etc used for the initial transmission
   NR_sched_pdsch_t sched_pdsch;
+  /// MBS group of the PTM transmission whose HARQ-ACK is awaited
+  struct nr_mbs_group *ptm_group;
+  /// LBRM TBS in bytes of a TB first sent by PTM, kept by its PTP retransmissions (TS 38.212 §5.4.2.1), 0 otherwise
+  uint32_t ptm_tbslbrm;
 } NR_UE_harq_t;
 
 //! fixme : need to enhace for the multiple TB CQI report
@@ -772,6 +779,13 @@ typedef struct {
   NR_list_t feedback_dl_harq;
   /// HARQ processes that await retransmission
   NR_list_t retrans_dl_harq;
+  /// DL HARQ processes reserved for PTM transmissions of the MBS groups the UE belongs to: G-RNTI and C-RNTI share
+  /// the DL HARQ entity (TS 38.321 §5.3.2.1), so they are never put back in available_dl_harq
+  uint32_t ptm_dl_harq_mask;
+  /// slot of the last PTM PDSCH of the groups of the UE: without the capability of FDMed unicast and multicast PDSCH
+  /// receptions, the UE decodes one of them per slot (TS 38.214 §5.1)
+  frame_t ptm_pdsch_frame;
+  slot_t ptm_pdsch_slot;
   /// information about every UL HARQ process
   NR_UE_ul_harq_t ul_harq_processes[NR_MAX_HARQ_PROCESSES];
   /// UL HARQ processes that are free
@@ -878,7 +892,8 @@ typedef enum {
   NO_TRIGGER,
   MSG3_CRNTI,
   BWP_SWITCH,
-  BEAM_SWITCH
+  BEAM_SWITCH,
+  MBS_JOIN
 } reconfig_trigger_state_t;
 
 typedef struct {
@@ -933,6 +948,66 @@ typedef struct NR_UE_info {
   bool nrdc_mode;
 } NR_UE_info_t;
 
+/// maximum number of RLC PDUs requested for one logical channel and one transport block
+#define MAX_NUM_DATA_REQ 1024
+
+/// a UE can receive up to maxG-RNTI-r17 groups, so are the groups of a cell
+#define NR_MAX_MBS_GROUPS NR_MAX_G_RNTI
+
+/// HARQ-ACK feedback of an MBS multicast session, from MBS-RNTI-SpecificConfig (TS 38.331 §6.3.2)
+typedef enum {
+  /// harq-FeedbackEnablerMulticast absent: no HARQ-ACK for PDSCH receptions of this G-RNTI (TS 38.213 §18)
+  NR_MBS_HARQ_FEEDBACK_DISABLED,
+  /// harq-FeedbackEnablerMulticast 'enabled', harq-FeedbackOptionMulticast 'ack-nack' (first HARQ-ACK reporting mode)
+  NR_MBS_HARQ_FEEDBACK_ACK_NACK,
+} nr_mbs_harq_feedback_t;
+
+/// MBS multicast session as configured in the gNB-DU by Multicast Context Setup (TS 38.473 §8.14.6)
+typedef struct nr_mbs_group_config {
+  /// mbs-RNTI-SpecificConfigId-r17 used to add the G-RNTI to the members' MAC-CellGroupConfig
+  int config_id;
+  /// MRB-Identity of the multicast MRB, and logical channel of its PTM RLC entity, TS 38.321 §6.2.1
+  int mrb_id;
+  logical_chan_id_t lcid;
+  nr_mbs_harq_feedback_t harq_feedback;
+  /// number of DL HARQ processes reserved in every member for PTM transmissions
+  int num_harq;
+} nr_mbs_group_config_t;
+
+/// state of one HARQ process used for PTM transmissions of a group
+typedef struct nr_mbs_harq {
+  uint8_t ndi;
+  uint8_t round;
+  /// PTM transport block, kept for retransmissions
+  byte_array_t transportBlock;
+  NR_sched_pdsch_t sched_pdsch;
+} nr_mbs_harq_t;
+
+/// MBS multicast group scheduled with point-to-multipoint (PTM) transmissions on a G-RNTI (TS 38.300 §16.10.5)
+typedef struct nr_mbs_group {
+  rnti_t g_rnti;
+  nr_mbs_group_config_t config;
+  struct nr_cell_sched_s *cell;
+  /// RLC-BearerConfig of the PTM RLC entity, also sent to the members
+  NR_RLC_BearerConfig_t *ptm_rlc_bearer;
+  /// C-RNTIs of the UEs that receive the session
+  int num_members;
+  rnti_t member[MAX_MOBILES_PER_GNB];
+  /// DL HARQ processes reserved for PTM, also set in ptm_dl_harq_mask of every member
+  uint32_t harq_mask;
+  nr_mbs_harq_t harq[NR_MAX_HARQ_PROCESSES];
+  /// HARQ process of the last PTM transmission, the next one starts searching after it
+  int last_harq_pid;
+  /// bytes waiting in the PTM RLC entity
+  uint32_t pending_bytes;
+  /// number of PTM transmissions and of MAC SDU bytes they carried
+  uint64_t ptm_tx;
+  uint64_t ptm_sdu_bytes;
+  /// HARQ-ACK of the members for PTM transmissions, a NACK triggering a PTP retransmission
+  uint64_t harq_ack;
+  uint64_t harq_nack;
+} nr_mbs_group_t;
+
 typedef struct {
   /// scheduling control info
   seq_arr_t connected_ues_list; // has pointers to NR_UE_info_t
@@ -941,6 +1016,8 @@ typedef struct {
   // bitmap of CSI-RS already scheduled in current slot
   int sched_csirs;
   uid_allocator_t uid_allocator;
+  /// MBS multicast groups, in the same RNTI space as the UEs; last element always NULL
+  nr_mbs_group_t *mbs_group_list[NR_MAX_MBS_GROUPS + 1];
 } NR_UEs_t;
 
 typedef struct {
@@ -1102,6 +1179,13 @@ typedef int (*nr_dl_rb_alloc_fn)(const nr_dl_sched_params_t *params, nr_dl_candi
 /// the available TBS for an initial transmission.  Called during MAC PDU
 /// generation.  Writes lcid_alloc[lcid] = max data bytes for that LCID.
 /// The execution loop caps actual RLC requests to these budgets.
+/// PTM MCS selection: returns the MCS (MCS table of DCI format 4_1, TS 38.214 §5.1.3.1) of the next new PTM transmission
+/// of the group, which every member in members[0..n_members-1] should decode
+typedef int (*nr_mbs_mcs_select_fn)(const nr_cell_sched_t *cell,
+                                    const struct nr_mbs_group *group,
+                                    NR_UE_info_t *const *members,
+                                    int n_members);
+
 typedef void (*nr_dl_lcid_alloc_fn)(const gNB_MAC_INST *mac,
                                     const nr_dl_candidate_t *candidate,
                                     int tbs_available,
@@ -1367,6 +1451,11 @@ typedef struct nr_cell_sched_s {
   NR_sched_pdsch_t sib1_pdsch[MAX_NUM_OF_SSB];
   periodic_ue_sched_t periodic_srs_config;
 
+  /// CORESET and Type-3 CSS of pdcch-ConfigMulticast in the CFR for DCI format 4_1 with CRC scrambled by G-RNTI
+  /// (TS 38.213 §10.1)
+  NR_ControlResourceSet_t *mbs_coreset;
+  NR_SearchSpace_t *mbs_search_space;
+
   /// Dedicated UL TDA list, built from frame_structure at config time
   seq_arr_t ul_tda;
   /// Next UL slot targeted by the UL preprocessor look-ahead
@@ -1431,6 +1520,8 @@ typedef struct gNB_MAC_INST_s {
   nr_dl_mcs_select_fn dl_mcs_select;
   nr_dl_rb_alloc_fn dl_rb_alloc;
   nr_dl_lcid_alloc_fn dl_lcid_alloc;
+  /// MCS selection for PTM transmissions of an MBS group
+  nr_mbs_mcs_select_fn mbs_mcs_select;
 
   /// UL RI/TPMI + TDA selection + beam selection + MCS selection + RB allocation
   nr_ul_ri_tpmi_select_fn ul_ri_tpmi_select;

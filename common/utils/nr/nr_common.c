@@ -439,6 +439,18 @@ int PRBalloc_to_locationandbandwidth(int NPRB,int RBstart) {
   return(PRBalloc_to_locationandbandwidth0(NPRB,RBstart,275));
 }
 
+/* TS 38.214 §5.1.2.2.3: RB granularity K of DL resource allocation type 1 scheduled by DCI format 4_0/4_1, whose RIV
+ * is sized on initial_size (CORESET 0 or initial DL BWP) but addresses the CFR of size cfr_size */
+int get_multicast_type1_rb_granularity(int cfr_size, int initial_size)
+{
+  const int K_set[] = {12, 10, 8, 6, 4, 2};
+  for (int i = 0; i < sizeofArray(K_set); i++) {
+    if (K_set[i] * initial_size <= cfr_size)
+      return K_set[i];
+  }
+  return 1;
+}
+
 int cce_to_reg_interleaving(const int R, int k, int n_shift, const int C, int L, const int N_regs) {
 
   int f;  // interleaving function

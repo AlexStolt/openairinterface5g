@@ -122,6 +122,24 @@ const initial_pucch_resource_t initial_pucch_resource[16] = {
 /* 15  */ {  1,       0,                 14,                   0,            4,       {    0,   3,    6,    9  }   },
 };
 
+bool nr_ue_is_g_rnti(const NR_UE_MAC_INST_t *mac, rnti_t rnti)
+{
+  for (int i = 0; i < mac->mbs.num_g_rnti; i++) {
+    if (mac->mbs.g_rnti[i] == rnti)
+      return true;
+  }
+  return false;
+}
+
+static bool nr_ue_g_rnti_harq_feedback(const NR_UE_MAC_INST_t *mac, rnti_t g_rnti)
+{
+  for (int i = 0; i < mac->mbs.num_g_rnti; i++) {
+    if (mac->mbs.g_rnti[i] == g_rnti)
+      return mac->mbs.harq_feedback[i];
+  }
+  return false;
+}
+
 int get_rnti_type(const NR_UE_MAC_INST_t *mac, const uint16_t rnti)
 {
   const RA_config_t *ra = &mac->ra;
@@ -135,6 +153,8 @@ int get_rnti_type(const NR_UE_MAC_INST_t *mac, const uint16_t rnti)
     rnti_type = TYPE_TC_RNTI_;
   } else if (rnti == mac->crnti) {
     rnti_type = TYPE_C_RNTI_;
+  } else if (nr_ue_is_g_rnti(mac, rnti)) {
+    rnti_type = TYPE_G_RNTI_;
   } else if (rnti == 0xFFFE) {
     rnti_type = TYPE_P_RNTI_;
   } else if (rnti == 0xFFFF) {
@@ -438,6 +458,7 @@ static inline bool nr_ue_has_dedicated_pucch_resource_set(const NR_PUCCH_Config_
   return cfg && cfg->resourceSetToAddModList && cfg->resourceSetToAddModList->list.array[0];
 }
 
+/* codebook_rnti: 0 for the unicast Type-2 HARQ-ACK codebook, else the G-RNTI of the multicast one (TS 38.213 §9.1.3.1) */
 static void set_harq_status(NR_UE_MAC_INST_t *mac,
                             uint8_t pucch_id,
                             uint8_t harq_id,
@@ -448,9 +469,11 @@ static void set_harq_status(NR_UE_MAC_INST_t *mac,
                             int n_CCE,
                             int N_CCE,
                             frame_t frame,
-                            int slot)
+                            int slot,
+                            rnti_t codebook_rnti)
 {
   NR_UE_DL_HARQ_STATUS_t *current_harq = &mac->dl_harq_info[harq_id][cw_id];
+  current_harq->codebook_rnti = codebook_rnti;
   const NR_PUCCH_Config_t *pucch_Config = mac->current_UL_BWP ? mac->current_UL_BWP->pucch_Config : NULL;
   const NR_PUCCH_ConfigCommon_t *pucch_ConfigCommon = mac->current_UL_BWP ? mac->current_UL_BWP->pucch_ConfigCommon : NULL;
   current_harq->active = true;
@@ -489,7 +512,7 @@ static void set_harq_status(NR_UE_MAC_INST_t *mac,
       continue;
     for (int c = 0; c < 2; c++) {
       NR_UE_DL_HARQ_STATUS_t *harq = &mac->dl_harq_info[i][c];
-      if (harq->active &&
+      if (harq->active && harq->codebook_rnti == codebook_rnti &&
           harq->ul_frame == current_harq->ul_frame &&
           harq->ul_slot == current_harq->ul_slot) {
         // highest_dai is the largest cumulative dai in the set of HARQ allocations for a given slot
@@ -1113,6 +1136,9 @@ static int nr_ue_process_dci_dl_10(NR_UE_MAC_INST_t *mac,
                    dci->ndi,
                    0))
     return -1;
+  current_harq->last_rnti = dci_ind->rnti;
+  if (dlsch_pdu->cw_info[0].new_data_indicator)
+    current_harq->tb_multicast = false;
 
   dlsch_pdu->n_codewords = 1;
 
@@ -1192,7 +1218,8 @@ static int nr_ue_process_dci_dl_10(NR_UE_MAC_INST_t *mac,
                       dci_ind->n_CCE,
                       dci_ind->N_CCE,
                       frame,
-                      slot);
+                      slot,
+                      0);
     }
     if (current_harq->round < sizeofArray(mac->stats.dl.rounds))
       mac->stats.dl.rounds[current_harq->round]++;
@@ -1508,6 +1535,9 @@ static int nr_ue_process_dci_dl_11(NR_UE_MAC_INST_t *mac,
                     dci->mcs,
                     dci->ndi,
                     cw_idx)) {
+      current_harq->last_rnti = dci_ind->rnti;
+      if (dlsch_pdu->cw_info[0].new_data_indicator)
+        current_harq->tb_multicast = false;
       if (current_harq->round < sizeofArray(mac->stats.dl.rounds))
         mac->stats.dl.rounds[current_harq->round]++;
       accumulate_dl_stats(mac, dlsch_pdu, &dlsch_pdu->cw_info[0], number_rbs);
@@ -1522,7 +1552,8 @@ static int nr_ue_process_dci_dl_11(NR_UE_MAC_INST_t *mac,
                       dci_ind->n_CCE,
                       dci_ind->N_CCE,
                       frame,
-                      slot);
+                      slot,
+                      0);
       cw_idx++;
     } else
       return -1;
@@ -1555,7 +1586,8 @@ static int nr_ue_process_dci_dl_11(NR_UE_MAC_INST_t *mac,
                       dci_ind->n_CCE,
                       dci_ind->N_CCE,
                       frame,
-                      slot);
+                      slot,
+                      0);
       cw_idx++;
     } else
       return -1;
@@ -1592,6 +1624,9 @@ static int nr_ue_process_dci_dl_11(NR_UE_MAC_INST_t *mac,
   AssertFatal(max_mimo_layers > 0, "Invalid number of max MIMO layers for PDSCH\n");
   int nl_tbslbrm = max_mimo_layers < 4 ? max_mimo_layers : 4;
   dlsch_pdu->tbslbrm = nr_compute_tbslbrm(dlsch_pdu->mcs_table, sc_info->dl_bw_tbslbrm, nl_tbslbrm);
+  // a retransmission of a TB first scheduled by DCI format 4_1 keeps the LBRM of the multicast TB (TS 38.212 §5.4.2.1)
+  if (current_harq && current_harq->tb_multicast && !dlsch_pdu->cw_info[0].new_data_indicator)
+    dlsch_pdu->tbslbrm = current_harq->tbslbrm;
   /*PTRS configuration */
   dlsch_pdu->pduBitmap = 0;
   if (dl_dmrs_config->phaseTrackingRS != NULL) {
@@ -1618,6 +1653,142 @@ static int nr_ue_process_dci_dl_11(NR_UE_MAC_INST_t *mac,
   return 0;
 }
 
+/* PDSCH scheduled by DCI format 4_1 with CRC scrambled by G-RNTI, received as for DCI format 1_0 (TS 38.214 §5.1.4) in
+ * the CFR, i.e., the active DL BWP. pdsch-ConfigMulticast is not configured: default DMRS (TS 38.214 §5.1.6.2),
+ * PDSCH-ConfigCommon TDRA (Table 5.1.2.1.1-1), MCS Table 5.1.3.1-1, no xOverhead-Multicast, cell ID scrambling */
+static int nr_ue_process_dci_dl_41(NR_UE_MAC_INST_t *mac,
+                                   frame_t frame,
+                                   int slot,
+                                   dci_pdu_rel15_t *dci,
+                                   fapi_nr_dci_indication_pdu_t *dci_ind)
+{
+  const NR_UE_DL_BWP_t *current_DL_BWP = mac->current_DL_BWP;
+  fapi_nr_dl_config_request_t *dl_config = get_dl_config_request(mac, slot);
+  fapi_nr_dl_config_request_pdu_t *dl_conf_req = &dl_config->dl_config_list[dl_config->number_pdus];
+  dl_conf_req->pdu_type = FAPI_NR_DL_CONFIG_TYPE_DLSCH;
+  dl_conf_req->dlsch_config_pdu.rnti = dci_ind->rnti;
+  fapi_nr_dl_config_dlsch_pdu_rel15_t *dlsch_pdu = &dl_conf_req->dlsch_config_pdu.dlsch_config_rel15;
+  dlsch_pdu->pduBitmap = 0;
+  dlsch_pdu->BWPSize = current_DL_BWP->BWPSize;
+  dlsch_pdu->BWPStart = current_DL_BWP->BWPStart;
+  dlsch_pdu->SubcarrierSpacing = current_DL_BWP->scs;
+  dlsch_pdu->numCsiRsForRateMatching = 0;
+  dlsch_pdu->refPoint = 0;
+
+  /* TS 38.214 §5.1.2.2.3: RIV sized on CORESET 0 (or the initial DL BWP), RB'start and L'RBs in units of K RBs of the CFR */
+  const int cset0_size = mac->type0_PDCCH_CSS_config.num_rbs;
+  const int n_initial = cset0_size ? cset0_size : mac->sc_info.initial_dl_BWPSize;
+  if (nr_ue_process_dci_freq_dom_resource_assignment(NULL, dlsch_pdu, NULL, 0, n_initial, 0, dci->frequency_domain_assignment)
+      < 0) {
+    LOG_W(NR_MAC, "[%d.%d] Invalid frequency_domain_assignment in DCI 4_1, ignoring it\n", frame, slot);
+    return -1;
+  }
+  const int K = get_multicast_type1_rb_granularity(dlsch_pdu->BWPSize, n_initial);
+  dlsch_pdu->start_rb *= K;
+  dlsch_pdu->number_rbs *= K;
+
+  NR_tda_info_t tda_info = get_dl_tda_info(current_DL_BWP,
+                                           dci_ind->ss_type,
+                                           dci->time_domain_assignment.val,
+                                           mac->dmrs_TypeA_Position,
+                                           1,
+                                           TYPE_G_RNTI_,
+                                           dci_ind->coreset_type == NFAPI_NR_CSET_CONFIG_PDCCH_CONFIG,
+                                           false);
+  if (!tda_info.valid_tda)
+    return -1;
+  dlsch_pdu->number_symbols = tda_info.nrOfSymbols;
+  dlsch_pdu->start_symbol = tda_info.startSymbolIndex;
+  dlsch_pdu->nscid = 0;
+  dlsch_pdu->dlDmrsScramblingId = mac->physCellId;
+  dlsch_pdu->dlDataScramblingId = mac->physCellId;
+  dlsch_pdu->dlDmrsSymbPos = fill_dmrs_mask(NULL,
+                                            NR_DL_DCI_FORMAT_1_0,
+                                            mac->dmrs_TypeA_Position,
+                                            dlsch_pdu->number_symbols,
+                                            dlsch_pdu->start_symbol,
+                                            tda_info.mapping_type,
+                                            1);
+  dlsch_pdu->dmrsConfigType = NFAPI_NR_DMRS_TYPE1;
+  dlsch_pdu->n_dmrs_cdm_groups = dlsch_pdu->number_symbols == 2 ? 1 : 2;
+  dlsch_pdu->dmrs_ports = 1;
+  dlsch_pdu->vrb_to_prb_mapping =
+      dci->vrb_to_prb_mapping.val == 0 ? vrb_to_prb_mapping_non_interleaved : vrb_to_prb_mapping_interleaved;
+  dlsch_pdu->mcs_table = get_dlsch_mcs_table(NR_DL_DCI_FORMAT_4_1, TYPE_G_RNTI_, dci_ind->ss_type, NULL, NULL, false, NULL);
+
+  /* TS 38.321 §5.3.1: the NDI of a G-RNTI assignment is considered toggled if the previous assignment of the HARQ
+   * process was for another RNTI */
+  NR_UE_DL_HARQ_STATUS_t *current_harq = &mac->dl_harq_info[dci->harq_pid.val][0];
+  const int ndi = current_harq->last_rnti == dci_ind->rnti ? dci->ndi : !current_harq->last_ndi;
+  const int nb_re_dmrs = 6 * dlsch_pdu->n_dmrs_cdm_groups;
+  if (!get_cw_info(current_harq,
+                   dlsch_pdu,
+                   dl_conf_req->pdu_type,
+                   &dlsch_pdu->cw_info[0],
+                   dlsch_pdu->number_rbs,
+                   nb_re_dmrs,
+                   0,
+                   dci->rv,
+                   dci->mcs,
+                   ndi,
+                   0))
+    return -1;
+  current_harq->last_rnti = dci_ind->rnti;
+  dlsch_pdu->n_codewords = 1;
+  // TS 38.212 §5.4.2.1: one layer without maxMIMO-Layers in pdsch-ConfigMulticast, LBRM over the CFR
+  dlsch_pdu->tbslbrm = nr_compute_tbslbrm(dlsch_pdu->mcs_table, dlsch_pdu->BWPSize, 1);
+  if (dlsch_pdu->cw_info[0].new_data_indicator) {
+    current_harq->tb_multicast = true;
+    current_harq->tbslbrm = dlsch_pdu->tbslbrm;
+  }
+  dlsch_pdu->harq_process_nbr = dci->harq_pid.val;
+  dlsch_pdu->scaling_factor_S = 1;
+  // TS 38.213 §18: HARQ-ACK only with harq-FeedbackEnablerMulticast
+  dlsch_pdu->k1_feedback = 0;
+  if (nr_ue_g_rnti_harq_feedback(mac, dci_ind->rnti)) {
+    // TS 38.213 §9.2.3: dl-DataToUL-ACK of PUCCH-Config, as dl-DataToUL-ACK-MulticastDCI-Format4-1 is not configured
+    const NR_PUCCH_Config_t *pucch_Config = mac->current_UL_BWP->pucch_Config;
+    const int ntn_ue_koffset = GET_NTN_UE_K_OFFSET(&mac->phy_config.config_req.ntn_config, dlsch_pdu->SubcarrierSpacing);
+    const int feedback_ti =
+        pucch_Config->dl_DataToUL_ACK->list.array[dci->pdsch_to_harq_feedback_timing_indicator.val][0] + ntn_ue_koffset;
+    AssertFatal(feedback_ti >= GET_DURATION_RX_TO_TX(mac, dlsch_pdu->SubcarrierSpacing),
+                "PDSCH to HARQ feedback time (%d) needs to be higher than DURATION_RX_TO_TX (%ld)\n",
+                feedback_ti,
+                GET_DURATION_RX_TO_TX(mac, dlsch_pdu->SubcarrierSpacing));
+    // no TPC command for PUCCH in DCI format 4_1 (TS 38.212 §7.3.1.5.2)
+    set_harq_status(mac,
+                    dci->pucch_resource_indicator,
+                    dci->harq_pid.val,
+                    0,
+                    0,
+                    feedback_ti,
+                    dci->dai[0].val,
+                    dci_ind->n_CCE,
+                    dci_ind->N_CCE,
+                    frame,
+                    slot,
+                    dci_ind->rnti);
+    dlsch_pdu->k1_feedback = feedback_ti;
+  }
+  mac->mbs.rx_tb++;
+  LOG_D(NR_MAC,
+        "[%d.%d] DCI 4_1 G-RNTI %04x: RBs %d+%d (K %d) symbols %d+%d MCS %d TBS %d HARQ %d NDI %d\n",
+        frame,
+        slot,
+        dci_ind->rnti,
+        dlsch_pdu->start_rb,
+        dlsch_pdu->number_rbs,
+        K,
+        dlsch_pdu->start_symbol,
+        dlsch_pdu->number_symbols,
+        dlsch_pdu->cw_info[0].mcs,
+        dlsch_pdu->cw_info[0].TBS,
+        dlsch_pdu->harq_process_nbr,
+        dlsch_pdu->cw_info[0].new_data_indicator);
+  dl_config->number_pdus++;
+  return 0;
+}
+
 static int8_t nr_ue_process_dci(NR_UE_MAC_INST_t *mac,
                                 frame_t frame,
                                 int slot,
@@ -1625,7 +1796,7 @@ static int8_t nr_ue_process_dci(NR_UE_MAC_INST_t *mac,
                                 fapi_nr_dci_indication_pdu_t *dci_ind,
                                 const nr_dci_format_t format)
 {
-  const char *dci_formats[] = {"1_0", "1_1", "2_0", "2_1", "2_2", "2_3", "0_0", "0_1"};
+  const char *dci_formats[] = {"1_0", "1_1", "2_0", "2_1", "2_2", "2_3", "0_0", "0_1", "4_1"};
   LOG_D(MAC, "Processing received DCI format %s\n", dci_formats[format]);
 
   switch (format) {
@@ -1643,6 +1814,10 @@ static int8_t nr_ue_process_dci(NR_UE_MAC_INST_t *mac,
 
     case NR_DL_DCI_FORMAT_1_1:
       return nr_ue_process_dci_dl_11(mac, frame, slot, dci, dci_ind);
+      break;
+
+    case NR_DL_DCI_FORMAT_4_1:
+      return nr_ue_process_dci_dl_41(mac, frame, slot, dci, dci_ind);
       break;
 
     case NR_DL_DCI_FORMAT_2_0:
@@ -2414,6 +2589,51 @@ void configure_initial_pucch(PUCCH_sched_t *pucch, int res_ind, int pucch_Resour
 *
 *********************************************************************/
 
+/* TS 38.213 §9.1.3.1: Type-2 HARQ-ACK codebooks of the multicast PDSCHs, one per G-RNTI in ascending order, one TB per
+ * PDSCH (maxNrofCodeWordsScheduledByDCI of pdsch-ConfigMulticast not configured). Returns the number of bits in ack */
+static int get_multicast_downlink_ack(NR_UE_MAC_INST_t *mac,
+                                      frame_t frame,
+                                      int slot,
+                                      int num_dl_harq,
+                                      uint32_t *ack,
+                                      int *res_ind,
+                                      PUCCH_sched_t *pucch)
+{
+  rnti_t g_rnti[NR_MAX_G_RNTI];
+  const int num_g_rnti = mac->mbs.num_g_rnti;
+  for (int i = 0; i < num_g_rnti; i++) {
+    int j = i;
+    for (; j > 0 && g_rnti[j - 1] > mac->mbs.g_rnti[i]; j--)
+      g_rnti[j] = g_rnti[j - 1];
+    g_rnti[j] = mac->mbs.g_rnti[i];
+  }
+  int n_bits = 0;
+  for (int g = 0; g < num_g_rnti; g++) {
+    uint8_t ack_data[NR_MAX_HARQ_PROCESSES] = {0};
+    int dai_max = 0;
+    for (int pid = 0; pid < num_dl_harq; pid++) {
+      NR_UE_DL_HARQ_STATUS_t *harq = &mac->dl_harq_info[pid][0];
+      if (!harq->active || harq->codebook_rnti != g_rnti[g] || harq->ul_frame != frame || harq->ul_slot != slot)
+        continue;
+      if (!harq->ack_received)
+        LOG_E(NR_MAC, "multicast ACK/NACK reporting initiated for harq pid %d before DLSCH decoding completed\n", pid);
+      dai_max = max(dai_max, harq->dai_cumul);
+      ack_data[harq->dai_cumul - 1] = harq->ack_received && harq->ack;
+      harq->active = false;
+      harq->ack_received = false;
+      *res_ind = harq->pucch_resource_indicator;
+      pucch->harq_ack_pucch_res_ind = harq->pucch_resource_indicator;
+      pucch->n_CCE = harq->n_CCE;
+      pucch->N_CCE = harq->N_CCE;
+    }
+    // the PDSCHs of the missed PDCCHs, detected by the counter DAI, are reported as NACK
+    for (int i = 0; i < dai_max; i++)
+      *ack |= (uint32_t)ack_data[i] << (n_bits + i);
+    n_bits += dai_max;
+  }
+  return n_bits;
+}
+
 bool get_downlink_ack(NR_UE_MAC_INST_t *mac, frame_t frame, int slot, PUCCH_sched_t *pucch)
 {
   uint32_t ack_data[NR_DL_MAX_NB_CW][NR_MAX_HARQ_PROCESSES] = {{0},{0}};
@@ -2444,7 +2664,7 @@ bool get_downlink_ack(NR_UE_MAC_INST_t *mac, frame_t frame, int slot, PUCCH_sche
   for (int code_word = 0; code_word < number_of_code_word; code_word++) {
     for (int dl_harq_pid = 0; dl_harq_pid < num_dl_harq; dl_harq_pid++) {
       NR_UE_DL_HARQ_STATUS_t *current_harq = &mac->dl_harq_info[dl_harq_pid][code_word];
-      if (current_harq->active) {
+      if (current_harq->active && !current_harq->codebook_rnti) {
         LOG_D(PHY, "HARQ pid %d is active for %d.%d\n",
               dl_harq_pid, current_harq->ul_frame, current_harq->ul_slot);
         /* check if current tx slot should transmit downlink acknowlegment */
@@ -2506,8 +2726,11 @@ bool get_downlink_ack(NR_UE_MAC_INST_t *mac, frame_t frame, int slot, PUCCH_sche
     }
   }
 
+  uint32_t multicast_ack = 0;
+  const int multicast_bits = get_multicast_downlink_ack(mac, frame, slot, num_dl_harq, &multicast_ack, &res_ind, pucch);
+
   /* no any ack to transmit */
-  if (number_harq_feedback == 0) {
+  if (number_harq_feedback == 0 && multicast_bits == 0) {
     return false;
   }
   else  if (number_harq_feedback > (sizeof(uint32_t)*8)) {
@@ -2533,7 +2756,7 @@ bool get_downlink_ack(NR_UE_MAC_INST_t *mac, frame_t frame, int slot, PUCCH_sche
   uint32_t V_temp = 0;
   uint32_t V_temp2 = 0;
   int O_ACK = 0;
-  uint8_t o_ACK = 0;
+  uint32_t o_ACK = 0;
   int O_bit_number_cw0 = 0;
   int O_bit_number_cw1 = 0;
 
@@ -2576,6 +2799,14 @@ bool get_downlink_ack(NR_UE_MAC_INST_t *mac, frame_t frame, int slot, PUCCH_sche
 
   if (number_harq_feedback != O_ACK) {
     LOG_E(MAC,"PUCCH Error for number of bits for acknowledgment\n");
+    return false;
+  }
+  // the multicast codebooks follow the unicast one
+  o_ACK |= multicast_ack << O_ACK;
+  O_ACK += multicast_bits;
+  number_harq_feedback = O_ACK;
+  if (number_harq_feedback > sizeof(o_ACK) * 8) {
+    LOG_E(MAC, "PUCCH number of ack bits exceeds payload size\n");
     return false;
   }
 
@@ -3622,6 +3853,22 @@ static bool extract_10_c_rnti(NR_UE_MAC_INST_t *mac,
   return false;
 }
 
+static void extract_41_g_rnti(dci_pdu_rel15_t *dci_pdu_rel15, const uint8_t *dci_pdu, int pos)
+{
+  LOG_D(NR_MAC_DCI, "Received dci 4_1 G rnti\n");
+  // TS 38.212 §7.3.1.5.2, field sizes from nr_dci_size()
+  EXTRACT_DCI_ITEM(dci_pdu_rel15->frequency_domain_assignment.val, dci_pdu_rel15->frequency_domain_assignment.nbits);
+  EXTRACT_DCI_ITEM(dci_pdu_rel15->time_domain_assignment.val, 4);
+  EXTRACT_DCI_ITEM(dci_pdu_rel15->vrb_to_prb_mapping.val, 1);
+  EXTRACT_DCI_ITEM(dci_pdu_rel15->mcs, 5);
+  EXTRACT_DCI_ITEM(dci_pdu_rel15->ndi, 1);
+  EXTRACT_DCI_ITEM(dci_pdu_rel15->rv, 2);
+  EXTRACT_DCI_ITEM(dci_pdu_rel15->harq_pid.val, 4);
+  EXTRACT_DCI_ITEM(dci_pdu_rel15->dai[0].val, 2);
+  EXTRACT_DCI_ITEM(dci_pdu_rel15->pucch_resource_indicator, 3);
+  EXTRACT_DCI_ITEM(dci_pdu_rel15->pdsch_to_harq_feedback_timing_indicator.val, 3);
+}
+
 static void extract_00_c_rnti(dci_pdu_rel15_t *dci_pdu_rel15, const uint8_t *dci_pdu, int pos)
 {
   LOG_D(NR_MAC_DCI, "Received dci 0_0 C rnti\n");
@@ -3972,6 +4219,14 @@ static nr_dci_format_t nr_extract_dci_info(NR_UE_MAC_INST_t *mac,
         return NR_DCI_NONE;
       }
       break;
+    case NFAPI_NR_FORMAT_4_1:
+      if (rnti_type != TYPE_G_RNTI_) {
+        LOG_E(NR_MAC_DCI, "DCI format 4_1 only with G-RNTI\n");
+        return NR_DCI_NONE;
+      }
+      format = NR_DL_DCI_FORMAT_4_1;
+      extract_41_g_rnti(&mac->def_dci_pdu_rel15[slot][format], dci_pdu, pos);
+      break;
     default :
       LOG_E(NR_MAC_DCI, "DCI format not supported\n");
   }
@@ -4318,7 +4573,7 @@ static void nr_ue_process_mac_pdu(NR_UE_MAC_INST_t *mac, nr_downlink_indication_
           break;
         }
         // discard the received subPDU if RB is suspended
-        if (is_lcid_suspended(mac, rx_lcid)) {
+        if (!(mac->mbs.mtch_lcids & (1ULL << rx_lcid)) && is_lcid_suspended(mac, rx_lcid)) {
           LOG_W(NR_MAC, "Received PDU for a suspended RB, corresponding to LCID %d. Dropping it.\n", rx_lcid);
           break;
         }

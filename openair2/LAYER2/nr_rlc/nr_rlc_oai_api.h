@@ -60,6 +60,9 @@ void nr_mac_rlc_status_ind(uint16_t ue_id, frame_t frame, int n_ch, const logica
 
 void nr_rlc_add_srb(int ue_id, int srb_id, const NR_RLC_BearerConfig_t *rlc_BearerConfig);
 void nr_rlc_add_drb(int ue_id, int drb_id, const NR_RLC_BearerConfig_t *rlc_BearerConfig);
+/* MRB entities are in the RLC context of the G-RNTI in the gNB, and of the UE in the UE */
+void nr_rlc_add_mrb(int ue_id, const NR_RLC_BearerConfig_t *rlc_BearerConfig);
+void nr_rlc_mrb_recv_sdu(int ue_id, int mrb_id, const uint8_t *buf, int size);
 
 void nr_rlc_set_rlf_handler(int ue_id, rlf_handler_t rlf_h);
 

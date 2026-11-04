@@ -280,6 +280,10 @@ typedef struct {
 #define NR_DCI_PRNTI_SMI_PAGING_SCHED_ONLY 1 /* 01: PDSCH carries paging, no Short Message */
 #define NR_DCI_PRNTI_SMI_SHORT_MSG_ONLY 2 /* 10: Short Message only */
 #define NR_DCI_PRNTI_SMI_PAGING_AND_SHORT 3 /* 11: PDSCH paging and Short Message */
+/* maxG-RNTI-r17 (TS 38.331 §6.4): number of G-RNTIs that can be configured for a UE */
+#define NR_MAX_G_RNTI 16
+/* TS 38.212 §7.3.1.5.2: trailing reserved bits of DCI format 4_1 */
+#define NR_DCI_FORMAT_4_1_RESERVED_BITS 3
 
 // DCI pdu structures. Used by both gNB and UE.
 typedef struct {
@@ -413,6 +417,7 @@ typedef enum {
   NR_DL_DCI_FORMAT_2_3,
   NR_UL_DCI_FORMAT_0_0,
   NR_UL_DCI_FORMAT_0_1,
+  NR_DL_DCI_FORMAT_4_1,
   NR_DCI_NONE
 } nr_dci_format_t;
 

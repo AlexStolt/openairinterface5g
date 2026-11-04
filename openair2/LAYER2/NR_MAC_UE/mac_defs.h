@@ -401,6 +401,13 @@ typedef struct {
   uint32_t R;
   uint32_t TBS;
   int last_ndi;
+  /// RNTI of the last DL assignment of the process: G-RNTI and C-RNTI share the HARQ entity (TS 38.321 §5.3.1)
+  rnti_t last_rnti;
+  /// HARQ-ACK codebook of the feedback: 0 unicast, else G-RNTI of the multicast one (TS 38.213 §9.1.3.1)
+  rnti_t codebook_rnti;
+  /// TB first scheduled by DCI format 4_1: its retransmissions keep the LBRM of the multicast TB (TS 38.212 §5.4.2.1)
+  bool tb_multicast;
+  uint32_t tbslbrm;
   int round;
 } NR_UE_DL_HARQ_STATUS_t;
 
@@ -630,7 +637,7 @@ typedef struct NR_UE_MAC_INST_s {
   NR_CSIRS_meas_t csirs_measurements;
   ssb_ro_preambles_t ssb_ro_preambles;
 
-  dci_pdu_rel15_t def_dci_pdu_rel15[NR_MAX_SLOTS_PER_FRAME][8];
+  dci_pdu_rel15_t def_dci_pdu_rel15[NR_MAX_SLOTS_PER_FRAME][NR_DCI_NONE];
 
   // Defined for abstracted mode
   NR_UE_DL_HARQ_STATUS_t dl_harq_info[NR_MAX_HARQ_PROCESSES][2]; // one harq process for each codeword
@@ -664,6 +671,19 @@ typedef struct NR_UE_MAC_INST_s {
     uint32_t dl_frequency;
     uint32_t uplink_frequency;
   } ho_source;
+  /// MBS multicast: G-RNTIs of MAC-CellGroupConfig and Type-3 CSS of pdcch-ConfigMulticast in the CFR (TS 38.213 §18)
+  struct {
+    int num_g_rnti;
+    rnti_t g_rnti[NR_MAX_G_RNTI];
+    int config_id[NR_MAX_G_RNTI];
+    /// harq-FeedbackEnablerMulticast with harq-FeedbackOptionMulticast 'ack-nack' (TS 38.213 §18)
+    bool harq_feedback[NR_MAX_G_RNTI];
+    NR_SearchSpace_t *search_space;
+    /// LCIDs of the MTCHs of PTM RLC entities, which are not in lc_ordered_list
+    uint64_t mtch_lcids;
+    /// PTM transport blocks received on a G-RNTI
+    uint64_t rx_tb;
+  } mbs;
 } NR_UE_MAC_INST_t;
 
 static inline int GET_NTN_UE_K_OFFSET(const fapi_nr_ntn_config_t *ntn_ta, int scs)

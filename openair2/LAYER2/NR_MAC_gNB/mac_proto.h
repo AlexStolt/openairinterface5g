@@ -201,6 +201,14 @@ int nr_acknack_scheduling(nr_cell_sched_t *cell,
                           int beam_index,
                           int r_pucch,
                           int is_common);
+int nr_acknack_scheduling_ptm(nr_cell_sched_t *cell,
+                              NR_UE_info_t *UE,
+                              frame_t frame,
+                              slot_t slot,
+                              int r_pucch,
+                              int f,
+                              rnti_t g_rnti,
+                              bool commit);
 
 int get_pdsch_to_harq_feedback(NR_PUCCH_Config_t *pucch_Config,
                                nr_dci_format_t dci_format,
@@ -557,6 +565,7 @@ void nr_mac_reset_ul_failure(NR_UE_sched_ctrl_t *sched_ctrl);
 bool nr_mac_check_ul_failure(gNB_MAC_INST *nrmac, int rnti, NR_UE_sched_ctrl_t *sched_ctrl);
 
 void nr_mac_trigger_reconfiguration(const gNB_MAC_INST *nrmac, nr_cell_sched_t *cell, NR_UE_info_t *UE, int new_bwp_id, int new_beam);
+void nr_mac_request_reconfiguration(const gNB_MAC_INST *nrmac, NR_UE_info_t *UE, NR_CellGroupConfig_t *cellGroup_for_UE);
 void reset_sc_info(NR_UE_ServingCell_Info_t *sc_info);
 bool nr_mac_add_lcid(NR_UE_sched_ctrl_t *sched_ctrl, const nr_lc_config_t *c);
 nr_lc_config_t *nr_mac_get_lc_config(NR_UE_sched_ctrl_t* sched_ctrl, int lcid);
@@ -626,4 +635,15 @@ bool nr_ul_check_phr(const nr_ul_sched_params_t *params,
                      uint8_t mcs,
                      nr_ul_phr_advice_t *advice);
 fsn_t get_fb_frame_slot(int frame, int slot, int K, int n_slots_frame, int NTN_gNB_Koffset);
+
+void fill_dl_tx_request(post_process_pdsch_t *pdsch, const uint8_t *buf, int pduindex, uint32_t TBS, frame_t frame, slot_t slot);
+
+/* MBS multicast (TS 38.300 §16.10) */
+nr_mbs_group_t *find_mbs_group(const NR_UEs_t *UEs, rnti_t g_rnti);
+nr_mbs_group_t *nr_mac_add_mbs_group(gNB_MAC_INST *mac, nr_cell_sched_t *cell, const nr_mbs_group_config_t *config);
+void nr_mac_release_mbs_group(gNB_MAC_INST *mac, rnti_t g_rnti);
+bool nr_mac_add_mbs_member(gNB_MAC_INST *mac, nr_mbs_group_t *group, NR_UE_info_t *UE);
+void nr_mac_remove_mbs_member(gNB_MAC_INST *mac, nr_mbs_group_t *group, NR_UE_info_t *UE);
+void nr_schedule_mbs(gNB_MAC_INST *mac, nr_cell_sched_t *cell, post_process_pdsch_t *pp_pdsch);
+void nr_mbs_handle_dl_harq(NR_UE_info_t *UE, int harq_pid, bool success, int harq_round_max);
 #endif /*__LAYER2_NR_MAC_PROTO_H__*/

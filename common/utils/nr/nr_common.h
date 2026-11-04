@@ -43,7 +43,8 @@
   R(TYPE_TPC_PUSCH_RNTI_) /* PUSCH power control */               \
   R(TYPE_TPC_PUCCH_RNTI_) /* PUCCH power control */               \
   R(TYPE_TPC_SRS_RNTI_)                                           \
-  R(TYPE_MCS_C_RNTI_)
+  R(TYPE_MCS_C_RNTI_)                                             \
+  R(TYPE_G_RNTI_) /* Group RNTI for MBS multicast */
 
 #define R(k) k ,
 typedef enum { RNTI_NAMES } nr_rnti_type_t;
@@ -297,6 +298,7 @@ int NRRIV2BW(int locationAndBandwidth,int N_RB);
 int NRRIV2PRBOFFSET(int locationAndBandwidth,int N_RB);
 int PRBalloc_to_locationandbandwidth0(int NPRB,int RBstart,int BWPsize);
 int PRBalloc_to_locationandbandwidth(int NPRB,int RBstart);
+int get_multicast_type1_rb_granularity(int cfr_size, int initial_size);
 int get_subband_size(int NPRB,int size);
 void SLIV2SL(int SLIV,int *S,int *L);
 int get_dmrs_port(int nl, uint16_t dmrs_ports);

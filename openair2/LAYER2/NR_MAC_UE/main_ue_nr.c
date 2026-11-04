@@ -256,6 +256,10 @@ static void release_dedicated_bwp0_config(NR_UE_MAC_INST_t *mac)
 void release_mac_configuration(NR_UE_MAC_INST_t *mac, NR_UE_MAC_reset_cause_t cause)
 {
   NR_UE_ServingCell_Info_t *sc = &mac->sc_info;
+  /* the multicast configuration is part of the connected-mode configuration */
+  asn1cFreeStruc(asn_DEF_NR_SearchSpace, mac->mbs.search_space);
+  mac->mbs.num_g_rnti = 0;
+  mac->mbs.mtch_lcids = 0;
   /* Partial release for normal no-redirection RRCRelease: RRC keeps the current cell selected for idle camping
    * (TS 38.304 §5.2.5), so keep SIB1/common BWP0/paging PDCCH and drop only connected-mode MAC config. */
   if (cause == GO_TO_IDLE_KEEP_CAMPED) {
