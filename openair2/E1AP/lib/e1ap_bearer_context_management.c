@@ -3252,6 +3252,21 @@ struct E1AP_E1AP_PDU *encode_E1_bc_bearer_context_setup_request(const e1ap_bc_be
     uint8_t sst = in->sst;
     OCTET_STRING_fromBuf(&ctx->snssai.sST, (const char *)&sst, 1);
 
+    /* The 5GC side of the tunnel. locationindependent: one tunnel for the
+     * session. The 5GC offers it per MBS area, but there is one service area
+     * until the MBS service area is implemented, so the distinction has
+     * nothing to carry yet. */
+    if (in->tnl_present) {
+      asn1cCalloc(ctx->bcBearerContextNGU_TNLInfoat5GC, tnl);
+      tnl->present = E1AP_BCBearerContextNGU_TNLInfoat5GC_PR_locationindependent;
+      asn1cCalloc(tnl->choice.locationindependent, li);
+      li->present = E1AP_MBSNGUInformationAt5GC_PR_multicast;
+      asn1cCalloc(li->choice.multicast, mc);
+      TRANSPORT_LAYER_ADDRESS_IPv4_TO_BIT_STRING(in->multicast_addr, &mc->ipmcAddress);
+      TRANSPORT_LAYER_ADDRESS_IPv4_TO_BIT_STRING(in->source_addr, &mc->ipsourceAddress);
+      INT32_TO_OCTET_STRING(in->c_teid, &mc->gtpDLTEID);
+    }
+
     asn1cSequenceAdd(ctx->bcMRBToSetupList.list, E1AP_BCMRBSetupConfiguration_Item_t, mrb);
     mrb->mrb_ID = in->mrb_id;
     /* Broadcast has no feedback, so the PDCP side is as plain as it gets:
@@ -3297,6 +3312,27 @@ bool decode_E1_bc_bearer_context_setup_request(e1ap_bc_bearer_setup_req_t *out, 
           out->mrb_id = ctx->bcMRBToSetupList.list.array[0]->mrb_ID;
         if (ctx->snssai.sST.size > 0)
           out->sst = ctx->snssai.sST.buf[0];
+        const E1AP_BCBearerContextNGU_TNLInfoat5GC_t *tnl = ctx->bcBearerContextNGU_TNLInfoat5GC;
+        const E1AP_MBSNGUInformationAt5GC_Multicast_t *mc = NULL;
+        if (tnl != NULL) {
+          if (tnl->present == E1AP_BCBearerContextNGU_TNLInfoat5GC_PR_locationindependent
+              && tnl->choice.locationindependent != NULL
+              && tnl->choice.locationindependent->present == E1AP_MBSNGUInformationAt5GC_PR_multicast) {
+            mc = tnl->choice.locationindependent->choice.multicast;
+          } else if (tnl->present == E1AP_BCBearerContextNGU_TNLInfoat5GC_PR_locationdependent
+                     && tnl->choice.locationdependent != NULL
+                     && tnl->choice.locationdependent->list.count > 0
+                     && tnl->choice.locationdependent->list.array[0]->mbsNGUInformationAt5GC.present
+                            == E1AP_MBSNGUInformationAt5GC_PR_multicast) {
+            mc = tnl->choice.locationdependent->list.array[0]->mbsNGUInformationAt5GC.choice.multicast;
+          }
+        }
+        if (mc != NULL) {
+          BIT_STRING_TO_TRANSPORT_LAYER_ADDRESS_IPv4(&mc->ipmcAddress, out->multicast_addr);
+          BIT_STRING_TO_TRANSPORT_LAYER_ADDRESS_IPv4(&mc->ipsourceAddress, out->source_addr);
+          OCTET_STRING_TO_INT32(&mc->gtpDLTEID, out->c_teid);
+          out->tnl_present = true;
+        }
         break;
       }
       default:

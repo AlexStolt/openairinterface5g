@@ -11,6 +11,7 @@
 #include "openair2/RRC/NR/nr_rrc_proto.h"
 #include "common/ran_context.h"
 #include "openair2/RRC/NR/nr_rrc_defs.h"
+#include <arpa/inet.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -1653,6 +1654,32 @@ static int ngap_gNB_handle_broadcast_session_setup(sctp_assoc_t assoc_id, uint32
     snprintf(tmgi_hex + 2 * i, 3, "%02x", tmgi->buf[i]);
   NGAP_INFO("[SCTP %u] Broadcast session setup: TMGI %s (%d octets)\n", assoc_id, tmgi_hex, (int)tmgi->size);
 
+  /* Where the payload will come from. The 5GC distributes a broadcast
+   * session to a multicast group with one common TEID shared by every gNB in
+   * the service area, so there is no per-gNB tunnel to allocate and nothing
+   * to hand back -- the gNB subscribes and listens. */
+  mbs_session_transfer_t mbs_tnl = {0};
+  NGAP_FIND_PROTOCOLIE_BY_ID(NGAP_BroadcastSessionSetupRequestIEs_t,
+                             ie,
+                             container,
+                             NGAP_ProtocolIE_ID_id_MBSSessionSetupRequestTransfer,
+                             false);
+  if (ie != NULL
+      && !decodeMBSSessionSetup(&mbs_tnl, ie->value.choice.OCTET_STRING_CONTAINING_MBSSessionSetupOrModRequestTransfer_)) {
+    NGAP_ERROR("[SCTP %u] Broadcast session setup with an undecodable transfer\n", assoc_id);
+    return -1;
+  }
+  if (mbs_tnl.tnl_present) {
+    char group[INET_ADDRSTRLEN], source[INET_ADDRSTRLEN];
+    NGAP_INFO("[SCTP %u] Broadcast session user plane: group %s source %s C-TEID 0x%08x\n",
+              assoc_id,
+              inet_ntop(AF_INET, &mbs_tnl.multicast_addr, group, sizeof(group)),
+              inet_ntop(AF_INET, &mbs_tnl.source_addr, source, sizeof(source)),
+              mbs_tnl.c_teid);
+  } else {
+    NGAP_WARN("[SCTP %u] Broadcast session setup carries no user plane information\n", assoc_id);
+  }
+
   /* Acknowledge, echoing the session identity back so the core can see the
    * RAN accepted the session it allocated. */
   NGAP_NGAP_PDU_t out = {0};
@@ -1700,6 +1727,10 @@ static int ngap_gNB_handle_broadcast_session_setup(sctp_assoc_t assoc_id, uint32
     memcpy(req->tmgi, tmgi->buf, sizeof(req->tmgi));
     req->mrb_id = 1;
     req->sst = 1;
+    req->tnl_present = mbs_tnl.tnl_present;
+    req->multicast_addr = mbs_tnl.multicast_addr;
+    req->source_addr = mbs_tnl.source_addr;
+    req->c_teid = mbs_tnl.c_teid;
     /* Instance 0, as the RRC side does: the E1AP task is registered there,
      * and the CU-UP association is resolved at the send. */
     itti_send_msg_to_task(TASK_CUCP_E1, 0, msg);
