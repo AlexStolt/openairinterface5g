@@ -1030,20 +1030,32 @@ bool nr_pdcp_mbs_broadcast_deliver(protocol_ctxt_t *ctxt_pP,
     return true;
   }
 
-  const rb_id_t drb_id = 1;
+  /* Through SDAP, not straight into PDCP. A UE's downlink carries an SDAP
+   * header and the receiver strips one whether or not we wrote it, so
+   * handing PDCP a bare IP packet costs the first byte of the payload and
+   * the UE quietly drops it. This is the path ordinary downlink data takes
+   * on the CU-UP (gtpv1u_create_ngu_tunnel passes sdap_data_req), and the
+   * interim eBPF scheme ends up on it too -- by rewriting the packet into a
+   * UE's own tunnel it rejoins the normal flow further upstream.
+   *
+   * pdusession_id 1 and the QFI we were handed: one session per UE in these
+   * testbeds. */
   int delivered = 0;
   for (int i = 0; i < num_ues; i++) {
     protocol_ctxt_t ctxt = {.enb_flag = 1, .rntiMaybeUEid = ue_ids[i]};
-    if (nr_pdcp_data_req_drb(&ctxt,
-                             SRB_FLAG_NO,
-                             drb_id,
-                             muiP,
-                             confirmP,
-                             sdu_buffer_size,
-                             sdu_buffer,
-                             mode,
-                             sourceL2Id,
-                             destinationL2Id))
+    if (sdap_data_req(&ctxt,
+                      ue_ids[i],
+                      SRB_FLAG_NO,
+                      muiP,
+                      confirmP,
+                      sdu_buffer_size,
+                      sdu_buffer,
+                      mode,
+                      sourceL2Id,
+                      destinationL2Id,
+                      qfi,
+                      rqi,
+                      pdusession_id > 0 ? pdusession_id : 1))
       delivered++;
   }
   LOG_D(PDCP, "MBS: broadcast payload of %d bytes delivered to %d of %d UEs\n", sdu_buffer_size, delivered, num_ues);
