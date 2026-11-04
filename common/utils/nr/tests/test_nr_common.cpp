@@ -21,6 +21,17 @@ TEST(nr_common, nr_timer) {
   EXPECT_TRUE(nr_timer_expired(&timer));
 }
 
+// TS 38.214 §5.1.2.2.3: largest K in {1, 2, 4, 6, 8, 10, 12} with K <= N_CFR / N_initial
+TEST(nr_common, multicast_type1_rb_granularity) {
+  EXPECT_EQ(get_multicast_type1_rb_granularity(48, 48), 1);
+  EXPECT_EQ(get_multicast_type1_rb_granularity(24, 48), 1);
+  EXPECT_EQ(get_multicast_type1_rb_granularity(106, 48), 2);
+  EXPECT_EQ(get_multicast_type1_rb_granularity(273, 48), 4);
+  EXPECT_EQ(get_multicast_type1_rb_granularity(150, 24), 6);
+  EXPECT_EQ(get_multicast_type1_rb_granularity(275, 24), 10);
+  EXPECT_EQ(get_multicast_type1_rb_granularity(273, 22), 12);
+}
+
 
 int main(int argc, char **argv)
 {

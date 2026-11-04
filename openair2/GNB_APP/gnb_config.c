@@ -48,6 +48,7 @@
 #include "nr_common.h"
 #include "oai_asn1.h"
 #include "prs_nr_paramdef.h"
+#include "openair2/LAYER2/NR_MAC_gNB/nr_mbs_test_adapter.h"
 #include "radio/ETHERNET/if_defs.h"
 #include "rrc_messages_types.h"
 #include "s1ap_messages_types.h"
@@ -2082,6 +2083,8 @@ void RCconfig_nr_macrlc(configmodule_interface_t *cfg)
 
   nrmac->f1_config.setup_req = req;
   nrmac->f1_config.gnb_id = gnb_id;
+  /* TEMPORARY: MBS test adapter (config file MBS group + test SDUs), replaced by the CP/RLC providers */
+  nr_mbs_test_adapter_init(nrmac, cell);
 
   free(name); /* read_du_cell_info() allocated memory */
 }

@@ -534,6 +534,7 @@ NR_tda_info_t get_dl_tda_info(const NR_UE_DL_BWP_t *dl_BWP,
     case TYPE_RA_RNTI_:
     case TYPE_MSGB_RNTI_:
     case TYPE_TC_RNTI_:
+    case TYPE_G_RNTI_:
       if(tdalist)
         tda_info = set_tda_info_from_list(tdalist, tda_index);
       else
@@ -2920,7 +2921,9 @@ uint16_t get_rb_bwp_dci(nr_dci_format_t format,
       N_RB = ul_bwp_size;
   }
   else {
-    if(format == NR_DL_DCI_FORMAT_1_0 && ss_type == NR_SearchSpace__searchSpaceType_PR_common) {
+    // TS 38.212 §7.3.1.5.2: DCI format 4_1 is sized on CORESET 0 like DCI format 1_0 in a CSS
+    if ((format == NR_DL_DCI_FORMAT_1_0 && ss_type == NR_SearchSpace__searchSpaceType_PR_common)
+        || format == NR_DL_DCI_FORMAT_4_1) {
       N_RB = cset0_bwp_size ? cset0_bwp_size : initial_dl_bwp_size;
     }
     else
@@ -3331,6 +3334,20 @@ uint16_t nr_dci_size(const NR_UE_DL_BWP_t *DL_BWP,
       }
       // DMRS sequence init
       size += 1;
+      break;
+
+    case NR_DL_DCI_FORMAT_4_1:
+      /// TS 38.212 §7.3.1.5.2, fixed: Time Domain assgnmt 4, VRB2PRB 1, MCS 5, NDI 1, RV 2, HARQ PID 4, DAI 2, PUCCH RInd 3,
+      /// PDSCH to HARQ TInd 3, reserved NR_DCI_FORMAT_4_1_RESERVED_BITS (3) -- 28.
+      /// This equals the size of DCI format 1_0 in a CSS, so no size alignment is needed.
+      size = 28;
+      dci_pdu->harq_pid.nbits = 4;
+      dci_pdu->frequency_domain_assignment.nbits = ceil_log2_u32((N_RB * (N_RB + 1)) >> 1);
+      size += dci_pdu->frequency_domain_assignment.nbits;
+      dci_pdu->time_domain_assignment.nbits = 4;
+      dci_pdu->vrb_to_prb_mapping.nbits = 1;
+      dci_pdu->dai[0].nbits = 2;
+      dci_pdu->pdsch_to_harq_feedback_timing_indicator.nbits = 3;
       break;
 
     case NR_DL_DCI_FORMAT_2_0:

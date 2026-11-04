@@ -232,8 +232,10 @@ void gNB_dlsch_ulsch_scheduler(module_id_t module_idP, const int cell_id, frame_
   nr_schedule_ulsch(gNB, cell, frame, slot, &sched_info->UL_dci_req);
   stop_meas(&cell->schedule_ulsch);
 
-  // This schedules the DCI for Downlink and PDSCH
+  // This schedules the DCI for Downlink and PDSCH, PTM transmissions of MBS groups first
   start_meas(&cell->schedule_dlsch);
+  post_process_pdsch_t pp_pdsch = {frame, slot, &sched_info->DL_req.dl_tti_request_body, &sched_info->TX_req};
+  nr_schedule_mbs(gNB, cell, &pp_pdsch);
   nr_schedule_ue_spec(gNB, cell, frame, slot, &sched_info->DL_req, &sched_info->TX_req);
   stop_meas(&cell->schedule_dlsch);
 

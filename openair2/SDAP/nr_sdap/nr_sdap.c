@@ -31,6 +31,15 @@ static void nr_sdap_notify_mo_ul_data(ue_id_t ue_id, int pdusession_id)
   itti_send_msg_to_task(TASK_RRC_NRUE, ue_id, msg);
 }
 
+/* TEMPORARY test hook, see nr_mbs_test_adapter.h: stands in for the shared N3 delivery of an MBS session towards the
+ * gNB (TS 23.247 §7.2.1.4) until the MBS user plane is available */
+static sdap_dl_redirect_t sdap_dl_redirect;
+
+void nr_sdap_set_dl_redirect(sdap_dl_redirect_t redirect)
+{
+  sdap_dl_redirect = redirect;
+}
+
 bool sdap_data_req(protocol_ctxt_t *ctxt_p,
                    const ue_id_t ue_id,
                    const srb_flag_t srb_flag,
@@ -44,6 +53,8 @@ bool sdap_data_req(protocol_ctxt_t *ctxt_p,
                    const uint8_t qfi,
                    const bool rqi,
                    const int pdusession_id) {
+  if (ctxt_p->enb_flag && sdap_dl_redirect && sdap_dl_redirect(ue_id, pdusession_id, sdu_buffer, sdu_buffer_size))
+    return true;
   nr_sdap_entity_t *sdap_entity;
   sdap_entity = nr_sdap_get_entity(ue_id, pdusession_id);
 
@@ -77,6 +88,19 @@ void sdap_data_ind(int drb_id, int is_gnb, int pdusession_id, ue_id_t ue_id, cha
   }
 
   sdap_entity->rx_entity(sdap_entity, drb_id, is_gnb, pdusession_id, ue_id, buf, size);
+}
+
+void sdap_mrb_data_ind(ue_id_t ue_id, int pdusession_id, const char *buf, int size)
+{
+  /* TS 37.324 §5.2.2: SDAP SDUs of an MRB configured without SDAP header, delivered by the UE to the interface of the PDU
+   * session the multicast session is associated with */
+  nr_sdap_entity_t *sdap_entity = nr_sdap_get_entity(ue_id, pdusession_id);
+  if (!sdap_entity || sdap_entity->tun.sock < 0) {
+    LOG_D(SDAP, "UE %lx: no interface for PDU session %d, MRB SDU of %d bytes dropped\n", ue_id, pdusession_id, size);
+    return;
+  }
+  if (write(sdap_entity->tun.sock, buf, size) != size)
+    LOG_E(SDAP, "UE %lx: write of MRB SDU failed: %s\n", ue_id, strerror(errno));
 }
 
 static void sdap_tun_idle_listener_arg_free(void *arg)

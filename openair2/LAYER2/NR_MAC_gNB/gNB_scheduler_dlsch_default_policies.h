@@ -27,4 +27,9 @@ void nr_dl_lcid_alloc_default(const gNB_MAC_INST *mac,
                               int tbs_available,
                               int lcid_alloc[NR_MAX_NUM_LCID]);
 
+int nr_mbs_mcs_select_default(const nr_cell_sched_t *cell,
+                              const nr_mbs_group_t *group,
+                              NR_UE_info_t *const *members,
+                              int n_members);
+
 #endif /* GNB_SCHEDULER_DLSCH_DEFAULT_POLICIES_H */

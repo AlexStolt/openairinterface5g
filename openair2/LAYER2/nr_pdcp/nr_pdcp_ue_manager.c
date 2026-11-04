@@ -121,6 +121,10 @@ void nr_pdcp_manager_remove_ue(nr_pdcp_ue_manager_t *_m, ue_id_t UEid)
     if (ue->drb[j] != NULL)
       ue->drb[j]->delete_entity(ue->drb[j]);
 
+  for (j = 0; j < NR_PDCP_MAX_MRBS; j++)
+    if (ue->mrb[j] != NULL)
+      ue->mrb[j]->delete_entity(ue->mrb[j]);
+
   free(ue);
 
   m->ue_count--;

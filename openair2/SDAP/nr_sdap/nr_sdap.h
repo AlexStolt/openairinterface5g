@@ -39,6 +39,10 @@ bool sdap_data_req(protocol_ctxt_t *ctxt_p,
  * Downlink - nrUE
  */
 void sdap_data_ind(int drb_id, int is_gnb, int pdusession_id, ue_id_t ue_id, char *buf, int size);
+void sdap_mrb_data_ind(ue_id_t ue_id, int pdusession_id, const char *buf, int size);
+/* TEMPORARY test hook, returns true if it took the DL SDAP SDU */
+typedef bool (*sdap_dl_redirect_t)(ue_id_t ue_id, int pdusession_id, const uint8_t *buf, int size);
+void nr_sdap_set_dl_redirect(sdap_dl_redirect_t redirect);
 
 void start_sdap_tun_gnb_first_ue_default_pdu_session(ue_id_t ue_id, int pdu_session_id);
 void nr_sdap_generate_gnb_tun_ifname(char *ifname, ue_id_t ue_id);

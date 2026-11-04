@@ -24,6 +24,8 @@ typedef struct nr_rlc_ue_t {
   nr_rlc_entity_t *srb0;
   nr_rlc_entity_t *srb[3];
   nr_rlc_entity_t *drb[MAX_DRBS_PER_UE];
+  /// PTM RLC entities of multicast MRBs, indexed by LCID - 1, in the context identified by the G-RNTI
+  nr_rlc_entity_t *mrb[32];
   nr_lcid_rb_t lcid2rb[32];
   rlf_handler_t rlf_handler;
 } nr_rlc_ue_t;

@@ -45,6 +45,10 @@ static void *nr_pdcp_timer_thread(void *_nr_pdcp_ue_manager)
         if (ue_list[i]->drb[j] != NULL)
           ue_list[i]->drb[j]->set_time(ue_list[i]->drb[j], curtime);
       }
+      for (j = 0; j < NR_PDCP_MAX_MRBS; j++) {
+        if (ue_list[i]->mrb[j] != NULL)
+          ue_list[i]->mrb[j]->set_time(ue_list[i]->mrb[j], curtime);
+      }
     }
 
     nr_pdcp_manager_unlock(nr_pdcp_ue_manager);

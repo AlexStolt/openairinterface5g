@@ -3796,6 +3796,120 @@ NR_RLC_BearerConfig_t *get_DRB_RLC_BearerConfig(long lcChannelId,
   return rlc_BearerConfig;
 }
 
+NR_RLC_BearerConfig_t *get_MRB_PTM_RLC_BearerConfig(long lcChannelId, long mrbId, const nr_rlc_configuration_t *default_rlc_config)
+{
+  /* TS 38.331 §6.3.2 RLC-BearerConfig: the PTM RLC entity of a multicast MRB is identified by multicastRLC-BearerConfig,
+   * servedRadioBearer is absent (Cond LCH-SetupOnly), and the MTCH is DL only */
+  NR_RLC_BearerConfig_t *rlc_BearerConfig = calloc_or_fail(1, sizeof(*rlc_BearerConfig));
+  rlc_BearerConfig->logicalChannelIdentity = lcChannelId;
+  NR_RLC_Config_t *rlc_Config = calloc_or_fail(1, sizeof(*rlc_Config));
+  rlc_Config->present = NR_RLC_Config_PR_um_Uni_Directional_DL;
+  rlc_Config->choice.um_Uni_Directional_DL = calloc_or_fail(1, sizeof(*rlc_Config->choice.um_Uni_Directional_DL));
+  NR_DL_UM_RLC_t *dl_um = &rlc_Config->choice.um_Uni_Directional_DL->dl_UM_RLC;
+  dl_um->sn_FieldLength = calloc_or_fail(1, sizeof(*dl_um->sn_FieldLength));
+  *dl_um->sn_FieldLength = encode_sn_field_length_um(default_rlc_config->drb_um.sn_field_length);
+  dl_um->t_Reassembly = encode_t_reassembly(default_rlc_config->drb_um.t_reassembly);
+  rlc_BearerConfig->rlc_Config = rlc_Config;
+  rlc_BearerConfig->ext2 = calloc_or_fail(1, sizeof(*rlc_BearerConfig->ext2));
+  NR_MulticastRLC_BearerConfig_r17_t *mrb = calloc_or_fail(1, sizeof(*mrb));
+  mrb->servedMBS_RadioBearer_r17 = mrbId;
+  mrb->isPTM_Entity_r17 = calloc_or_fail(1, sizeof(*mrb->isPTM_Entity_r17));
+  *mrb->isPTM_Entity_r17 = NR_MulticastRLC_BearerConfig_r17__isPTM_Entity_r17_true;
+  rlc_BearerConfig->ext2->multicastRLC_BearerConfig_r17 = mrb;
+  return rlc_BearerConfig;
+}
+
+NR_ControlResourceSet_t *get_mbs_coreset_config(const NR_ServingCellConfigCommon_t *scc, const nr_mac_config_t *configuration)
+{
+  /* CORESET of pdcch-ConfigMulticast spanning the CFR, i.e., the initial DL BWP (TS 38.213 §10.1, §18), so that PTM DCIs
+   * do not take the few CCEs of CORESET 0 that initial access and fallback DCIs rely on */
+  const NR_BWP_t *bwp = &scc->downlinkConfigCommon->initialDownlinkBWP->genericParameters;
+  const int bwp_size = NRRIV2BW(bwp->locationAndBandwidth, MAX_BWP_SIZE);
+  const int bwp_start = NRRIV2PRBOFFSET(bwp->locationAndBandwidth, MAX_BWP_SIZE);
+  NR_ControlResourceSet_t *coreset = get_coreset_config(0, 0, 0, bwp_start, bwp_size, get_ssb_bitmap(scc), configuration->do_TCI);
+  coreset->controlResourceSetId = NR_MBS_CORESET_ID;
+  return coreset;
+}
+
+NR_SearchSpace_t *get_mbs_search_space_config(const NR_ControlResourceSet_t *coreset, const nr_mac_config_t *configuration)
+{
+  /* Type-3 CSS of pdcch-ConfigMulticast (TS 38.213 §10.1). It is monitored for DCI format 4_1 only, which is indicated by
+   * searchSpaceType-r17 of searchSpacesToAddModListExt-v1700, hence no Rel-15 DCI format here */
+  int num_agg_level_candidates[NUM_PDCCH_AGG_LEVELS];
+  const int num_cces = get_coreset_num_cces(coreset->frequencyDomainResources.buf, coreset->duration);
+  verify_agg_levels(num_cces, configuration->num_agg_level_candidates, coreset->controlResourceSetId, num_agg_level_candidates);
+  const int cset_id = coreset->controlResourceSetId;
+  NR_SearchSpace_t *ss = rrc_searchspace_config(true, NR_MBS_SEARCH_SPACE_ID, cset_id, num_agg_level_candidates);
+  free_and_zero(ss->searchSpaceType->choice.common->dci_Format0_0_AndFormat1_0);
+  return ss;
+}
+
+void add_mbs_cellGroupConfig(NR_CellGroupConfig_t *cellGroupConfig,
+                             rnti_t g_rnti,
+                             int config_id,
+                             bool harq_feedback,
+                             const NR_ControlResourceSet_t *coreset,
+                             const NR_SearchSpace_t *ss,
+                             const NR_RLC_BearerConfig_t *ptm_bearer)
+{
+  /* TS 38.331 §6.3.2 MAC-CellGroupConfig: G-RNTI of the multicast session. With harq-FeedbackEnablerMulticast 'enabled'
+   * and harq-FeedbackOptionMulticast 'ack-nack', the UE provides ACK/NACK for its PDSCH receptions, else no HARQ-ACK
+   * (TS 38.213 §18) */
+  NR_MAC_CellGroupConfig_t *mcg = cellGroupConfig->mac_CellGroupConfig;
+  DevAssert(mcg);
+  if (!mcg->ext4)
+    mcg->ext4 = calloc_or_fail(1, sizeof(*mcg->ext4));
+  if (!mcg->ext4->g_RNTI_ConfigToAddModList_r17)
+    mcg->ext4->g_RNTI_ConfigToAddModList_r17 = calloc_or_fail(1, sizeof(*mcg->ext4->g_RNTI_ConfigToAddModList_r17));
+  asn1cSequenceAdd(mcg->ext4->g_RNTI_ConfigToAddModList_r17->list, NR_MBS_RNTI_SpecificConfig_r17_t, g_rnti_config);
+  g_rnti_config->mbs_RNTI_SpecificConfigId_r17 = config_id;
+  g_rnti_config->groupCommon_RNTI_r17.present = NR_MBS_RNTI_SpecificConfig_r17__groupCommon_RNTI_r17_PR_g_RNTI;
+  g_rnti_config->groupCommon_RNTI_r17.choice.g_RNTI = g_rnti;
+  if (harq_feedback) {
+    asn1cCallocOne(g_rnti_config->harq_FeedbackEnablerMulticast_r17,
+                   NR_MBS_RNTI_SpecificConfig_r17__harq_FeedbackEnablerMulticast_r17_enabled);
+    asn1cCallocOne(g_rnti_config->harq_FeedbackOptionMulticast_r17,
+                   NR_MBS_RNTI_SpecificConfig_r17__harq_FeedbackOptionMulticast_r17_ack_nack);
+  }
+
+  /* TS 38.331 §6.3.2 BWP-DownlinkDedicated: CFR of the initial DL BWP, of the same size as the BWP as
+   * locationAndBandwidthMulticast is absent, with the Type-3 CSS for DCI format 4_1 (searchSpaceType-r17 of
+   * searchSpacesToAddModListExt-v1700, in the order of searchSpacesToAddModList) */
+  NR_BWP_DownlinkDedicated_t *dl_bwp = cellGroupConfig->spCellConfig->spCellConfigDedicated->initialDownlinkBWP;
+  DevAssert(dl_bwp);
+  if (!dl_bwp->ext2)
+    dl_bwp->ext2 = calloc_or_fail(1, sizeof(*dl_bwp->ext2));
+  if (!dl_bwp->ext2->cfr_ConfigMulticast_r17) {
+    dl_bwp->ext2->cfr_ConfigMulticast_r17 = calloc_or_fail(1, sizeof(*dl_bwp->ext2->cfr_ConfigMulticast_r17));
+    dl_bwp->ext2->cfr_ConfigMulticast_r17->present = NR_SetupRelease_CFR_ConfigMulticast_r17_PR_setup;
+    NR_CFR_ConfigMulticast_r17_t *cfr = calloc_or_fail(1, sizeof(*cfr));
+    dl_bwp->ext2->cfr_ConfigMulticast_r17->choice.setup = cfr;
+    NR_PDCCH_Config_t *pdcch = calloc_or_fail(1, sizeof(*pdcch));
+    cfr->pdcch_ConfigMulticast_r17 = pdcch;
+    pdcch->controlResourceSetToAddModList = calloc_or_fail(1, sizeof(*pdcch->controlResourceSetToAddModList));
+    NR_ControlResourceSet_t *cset = NULL;
+    asn_copy(&asn_DEF_NR_ControlResourceSet, (void **)&cset, coreset);
+    asn1cSeqAdd(&pdcch->controlResourceSetToAddModList->list, cset);
+    pdcch->searchSpacesToAddModList = calloc_or_fail(1, sizeof(*pdcch->searchSpacesToAddModList));
+    NR_SearchSpace_t *ss_copy = NULL;
+    asn_copy(&asn_DEF_NR_SearchSpace, (void **)&ss_copy, ss);
+    asn1cSeqAdd(&pdcch->searchSpacesToAddModList->list, ss_copy);
+    pdcch->ext2 = calloc_or_fail(1, sizeof(*pdcch->ext2));
+    pdcch->ext2->searchSpacesToAddModListExt_v1700 = calloc_or_fail(1, sizeof(*pdcch->ext2->searchSpacesToAddModListExt_v1700));
+    asn1cSequenceAdd(pdcch->ext2->searchSpacesToAddModListExt_v1700->list, NR_SearchSpaceExt_v1700_t, ss_ext);
+    ss_ext->searchSpaceType_r17 = calloc_or_fail(1, sizeof(*ss_ext->searchSpaceType_r17));
+    ss_ext->searchSpaceType_r17->common_r17.dci_Format4_1_r17 =
+        calloc_or_fail(1, sizeof(*ss_ext->searchSpaceType_r17->common_r17.dci_Format4_1_r17));
+  }
+
+  /* PTM RLC entity of the MRB (TS 38.331 §6.3.2 RLC-BearerConfig) */
+  if (!cellGroupConfig->rlc_BearerToAddModList)
+    cellGroupConfig->rlc_BearerToAddModList = calloc_or_fail(1, sizeof(*cellGroupConfig->rlc_BearerToAddModList));
+  NR_RLC_BearerConfig_t *bearer = NULL;
+  asn_copy(&asn_DEF_NR_RLC_BearerConfig, (void **)&bearer, ptm_bearer);
+  asn1cSeqAdd(&cellGroupConfig->rlc_BearerToAddModList->list, bearer);
+}
+
 static bool verify_radio_configuration(int uid,
                                        bool redcap,
                                        const NR_ServingCellConfigCommon_t *scc,

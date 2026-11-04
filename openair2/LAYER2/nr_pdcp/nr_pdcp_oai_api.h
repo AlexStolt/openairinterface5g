@@ -37,6 +37,15 @@ void nr_pdcp_add_drb(int is_gnb,
                      const struct sdap_configuration_s *sdap,
                      const nr_pdcp_entity_security_keys_and_algos_t *security_parameters);
 
+/* Multicast MRBs: in the gNB, the PDCP context of an MBS session is identified by NR_PDCP_MBS_CONTEXT_ID() of its G-RNTI,
+ * outside the range of the UE IDs, and its PDUs go to the PTM RLC entity of the G-RNTI. In the UE, the MRB is in the
+ * context of the UE, and its SDUs go to the PDU session the multicast session is associated with (TS 23.247 §7.2.1.3) */
+#define NR_PDCP_MBS_CONTEXT_ID(g_rnti) ((1ULL << 32) | (g_rnti))
+#define NR_PDCP_MBS_G_RNTI(context_id) ((rnti_t)((context_id) & 0xffff))
+void nr_pdcp_add_mrb(bool is_gnb, ue_id_t ue_id, int mrb_id, int pdusession_id, int sn_size, int t_reordering);
+bool nr_pdcp_mrb_data_req(ue_id_t ue_id, int mrb_id, const uint8_t *buf, int size);
+bool nr_pdcp_mrb_data_ind(ue_id_t ue_id, int mrb_id, int size, uint8_t *buf);
+
 void nr_pdcp_remove_UE(ue_id_t ue_id);
 void nr_pdcp_reestablishment(ue_id_t ue_id,
                              int rb_id,

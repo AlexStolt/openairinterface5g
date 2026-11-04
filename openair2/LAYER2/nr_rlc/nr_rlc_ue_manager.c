@@ -126,6 +126,10 @@ void nr_rlc_manager_remove_ue(nr_rlc_ue_manager_t *_m, int ue_id)
     if (ue->drb[j] != NULL)
       ue->drb[j]->delete_entity(ue->drb[j]);
 
+  for (j = 0; j < sizeofArray(ue->mrb); j++)
+    if (ue->mrb[j] != NULL)
+      ue->mrb[j]->delete_entity(ue->mrb[j]);
+
   free(ue);
 
   m->ue_count--;
