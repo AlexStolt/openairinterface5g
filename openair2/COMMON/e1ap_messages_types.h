@@ -534,6 +534,14 @@ typedef struct e1ap_bc_bearer_setup_req_s {
   uint8_t tmgi[6];
   long mrb_id;
   uint8_t sst;
+  /* Where the payload arrives. Only the CU-CP sees N2, so without carrying
+   * this the CU-UP -- which is the half that terminates N3 -- would have no
+   * way to know which tunnel to open. Optional in the ASN.1 and absent for a
+   * session the core has not given a user plane to. */
+  bool tnl_present;
+  in_addr_t multicast_addr;
+  in_addr_t source_addr;
+  uint32_t c_teid;
 } e1ap_bc_bearer_setup_req_t;
 
 /** Bearer Context Setup Failure (9.2.2.3 3GPP TS 38.463) */
