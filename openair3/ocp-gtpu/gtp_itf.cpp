@@ -612,7 +612,103 @@ static int udpServerSocket(openAddr_s addr)
   return sockfd;
 }
 
+/* Create a socket that receives a source-specific multicast group.
+ *
+ * A broadcast MBS session is distributed to a multicast group rather than to
+ * this gNB: the 5GC gives every gNB in the service area the same group and
+ * the same common TEID (TS 23.247 shared delivery, and our core offers
+ * nothing else -- MBS-SessionTNLInfo5GC has no unicast variant).
+ *
+ * The ordinary N3 socket cannot pick that up. It is bound to the gNB's own
+ * unicast address, and the kernel matches the destination, so a datagram
+ * addressed to the group is never delivered to it. Hence a socket of its
+ * own, bound to the group and joined to it. Keeping it separate also leaves
+ * the N3 and F1-U sockets exactly as they were.
+ */
+static int udpMulticastSocket(in_addr_t group, in_addr_t source, in_addr_t local, uint16_t port)
+{
+  char g[INET_ADDRSTRLEN], s[INET_ADDRSTRLEN], l[INET_ADDRSTRLEN];
+  inet_ntop(AF_INET, &group, g, sizeof(g));
+  inet_ntop(AF_INET, &source, s, sizeof(s));
+  inet_ntop(AF_INET, &local, l, sizeof(l));
+
+  int sockfd = socket(AF_INET, SOCK_DGRAM, 0);
+  if (sockfd == -1) {
+    LOG_E(GTPU, "MBS: socket for group %s: %s\n", g, strerror(errno));
+    return -1;
+  }
+
+  /* The unicast N3 socket already holds this port on another address. */
+  int one = 1;
+  if (setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one)) != 0)
+    LOG_W(GTPU, "MBS: SO_REUSEADDR for group %s: %s\n", g, strerror(errno));
+
+  struct sockaddr_in me = {};
+  me.sin_family = AF_INET;
+  me.sin_port = htons(port);
+  me.sin_addr.s_addr = group;
+  if (bind(sockfd, (struct sockaddr *)&me, sizeof(me)) == -1) {
+    LOG_E(GTPU, "MBS: bind to group %s:%u: %s\n", g, port, strerror(errno));
+    close(sockfd);
+    return -1;
+  }
+
+  /* Source-specific first: the core names the MB-UPF that sources the group,
+   * and filtering on it in the kernel is both cheaper and closer to what
+   * LL-SSM means. Not every network or kernel path supports it, so fall back
+   * to an any-source join rather than give up on the session. */
+  struct ip_mreq_source ssm = {};
+  ssm.imr_multiaddr.s_addr = group;
+  ssm.imr_interface.s_addr = local;
+  ssm.imr_sourceaddr.s_addr = source;
+  if (setsockopt(sockfd, IPPROTO_IP, IP_ADD_SOURCE_MEMBERSHIP, &ssm, sizeof(ssm)) == 0) {
+    LOG_I(GTPU, "MBS: joined group %s from source %s on %s, port %u\n", g, s, l, port);
+  } else {
+    LOG_W(GTPU, "MBS: source-specific join of %s failed (%s), trying any-source\n", g, strerror(errno));
+    struct ip_mreq asm_req = {};
+    asm_req.imr_multiaddr.s_addr = group;
+    asm_req.imr_interface.s_addr = local;
+    if (setsockopt(sockfd, IPPROTO_IP, IP_ADD_MEMBERSHIP, &asm_req, sizeof(asm_req)) != 0) {
+      LOG_E(GTPU, "MBS: join of group %s on %s: %s\n", g, l, strerror(errno));
+      close(sockfd);
+      return -1;
+    }
+    LOG_I(GTPU, "MBS: joined group %s on %s, port %u (any-source)\n", g, l, port);
+  }
+
+  globGtp.instances[sockfd].addr = {};
+  snprintf(globGtp.instances[sockfd].addr.originHost, sizeof(globGtp.instances[sockfd].addr.originHost), "%s", g);
+  snprintf(globGtp.instances[sockfd].addr.originService, sizeof(globGtp.instances[sockfd].addr.originService), "%u", port);
+  memcpy(globGtp.instances[sockfd].foundAddr, &group, sizeof(group));
+  globGtp.instances[sockfd].foundAddrLen = sizeof(group);
+  globGtp.instances[sockfd].ipVersion = 4;
+  return sockfd;
+}
+
 static void* gtpv1uReceiver(void *thr);
+
+/* Start receiving a broadcast session's multicast distribution. Mirrors
+ * gtpv1Init, but on a group instead of this gNB's own address. */
+instance_t gtpv1InitMulticast(in_addr_t group, in_addr_t source, in_addr_t local, uint16_t port)
+{
+  pthread_mutex_lock(&globGtp.gtp_lock);
+  int id = udpMulticastSocket(group, source, local, port);
+
+  if (id >= 0) {
+    LOG_I(GTPU, "MBS: created gtpu instance id %d for the broadcast group\n", id);
+    getInstRetInt(compatInst(id));
+    inst->thrData.h = id;
+    char name[32];
+    snprintf(name, sizeof(name), "GTPmc_%d", id);
+    threadCreate(&inst->thrData.t, gtpv1uReceiver, &inst->thrData, name, -1, OAI_PRIORITY_RT);
+  } else {
+    LOG_E(GTPU, "MBS: can't create a GTP-U instance for the broadcast group\n");
+  }
+
+  pthread_mutex_unlock(&globGtp.gtp_lock);
+  return id;
+}
+
 instance_t gtpv1Init(openAddr_t context)
 {
   pthread_mutex_lock(&globGtp.gtp_lock);
