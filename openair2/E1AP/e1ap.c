@@ -2,7 +2,10 @@
  * SPDX-License-Identifier: LicenseRef-CSSL-1.0
  */
 
+#include <arpa/inet.h>
 #include "e1ap.h"
+#include "openair3/ocp-gtpu/gtp_itf.h"
+#include "openair2/LAYER2/nr_pdcp/nr_pdcp_oai_api.h"
 #include "e1ap_common.h"
 #include "gnb_config.h"
 #include "openair3/UTILS/conversions.h"
@@ -31,7 +34,6 @@ static int e1apCUUP_handle_BC_BEARER_CONTEXT_SETUP_REQUEST(sctp_assoc_t assoc_id
                                                            e1ap_upcp_inst_t *inst,
                                                            const E1AP_E1AP_PDU_t *pdu)
 {
-  UNUSED(inst);
   DevAssert(pdu != NULL);
   e1ap_bc_bearer_setup_req_t req = {0};
   if (!decode_E1_bc_bearer_context_setup_request(&req, pdu)) {
@@ -42,6 +44,24 @@ static int e1apCUUP_handle_BC_BEARER_CONTEXT_SETUP_REQUEST(sctp_assoc_t assoc_id
         "MBS: broadcast bearer context for TMGI %02x%02x%02x%02x%02x%02x, MRB %ld, SST %d\n",
         req.tmgi[0], req.tmgi[1], req.tmgi[2], req.tmgi[3], req.tmgi[4], req.tmgi[5],
         req.mrb_id, req.sst);
+
+  /* Terminate the broadcast tunnel. This is the CU-UP's half of the session:
+   * N3 arrives here, not at the CU-CP, which is why the tunnel details were
+   * carried over E1 rather than read off N2. */
+  if (req.tnl_present) {
+    const e1ap_net_config_t *nc = &getCxtE1(inst->instance)->net_config;
+    const in_addr_t local = inet_addr(nc->localAddressN3);
+    const instance_t mc = gtpv1InitMulticast(req.multicast_addr, req.source_addr, local, nc->localPortN3);
+    if (mc < 0) {
+      LOG_E(E1AP, "MBS: could not join the broadcast group, the session will not deliver\n");
+    } else if (!gtpv1uRegisterIncomingTeid(req.c_teid, 0, req.mrb_id, nr_pdcp_mbs_broadcast_deliver)) {
+      LOG_E(E1AP, "MBS: could not listen on the broadcast TEID 0x%x\n", req.c_teid);
+    } else {
+      LOG_A(E1AP, "MBS: broadcast user plane up on TEID 0x%x\n", req.c_teid);
+    }
+  } else {
+    LOG_W(E1AP, "MBS: broadcast bearer context without a tunnel, nothing to terminate\n");
+  }
 
   /* The CU-UP's own identifier for the context. One session for now, so it
    * is derived rather than allocated; a session table replaces this when

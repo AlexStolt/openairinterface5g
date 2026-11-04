@@ -992,6 +992,64 @@ void nr_pdcp_reestablishment(ue_id_t ue_id,
   nr_pdcp_manager_unlock(nr_pdcp_ue_manager);
 }
 
+/* Deliver a broadcast session's payload to every attached UE.
+ *
+ * This is the interim scheme, and it is the eBPF proxy's job moved into the
+ * gNB: one copy per UE, each on that UE's own unicast bearer. It is not what
+ * broadcast is supposed to look like -- the payload should go out once on
+ * the session's MRB, addressed to the group -- but the MRB cannot transmit
+ * until group scheduling lands, and the data has to reach the UEs somehow in
+ * the meantime.
+ *
+ * What it does buy immediately: the payload now arrives on the real
+ * broadcast tunnel, terminated by the gNB, instead of being rewritten below
+ * the IP stack by a tc program that had to guess the TEID off the wire. When
+ * the MRB can carry it, only the body of this function changes.
+ *
+ * DRB 1 because that is the only one a UE has in these testbeds; a session
+ * mapped onto the right bearer is work for when there can be more than one.
+ */
+bool nr_pdcp_mbs_broadcast_deliver(protocol_ctxt_t *ctxt_pP,
+                                   const ue_id_t ue_id,
+                                   const srb_flag_t srb_flagP,
+                                   const mui_t muiP,
+                                   const confirm_t confirmP,
+                                   const sdu_size_t sdu_buffer_size,
+                                   unsigned char *const sdu_buffer,
+                                   const pdcp_transmission_mode_t mode,
+                                   const uint32_t *const sourceL2Id,
+                                   const uint32_t *const destinationL2Id,
+                                   const uint8_t qfi,
+                                   const bool rqi,
+                                   const int pdusession_id)
+{
+  ue_id_t ue_ids[MAX_MOBILES_PER_GNB];
+  const int num_ues = nr_pdcp_get_num_ues(ue_ids, MAX_MOBILES_PER_GNB);
+  if (num_ues <= 0) {
+    LOG_D(PDCP, "MBS: broadcast payload with no UE attached to give it to\n");
+    return true;
+  }
+
+  const rb_id_t drb_id = 1;
+  int delivered = 0;
+  for (int i = 0; i < num_ues; i++) {
+    protocol_ctxt_t ctxt = {.enb_flag = 1, .rntiMaybeUEid = ue_ids[i]};
+    if (nr_pdcp_data_req_drb(&ctxt,
+                             SRB_FLAG_NO,
+                             drb_id,
+                             muiP,
+                             confirmP,
+                             sdu_buffer_size,
+                             sdu_buffer,
+                             mode,
+                             sourceL2Id,
+                             destinationL2Id))
+      delivered++;
+  }
+  LOG_D(PDCP, "MBS: broadcast payload of %d bytes delivered to %d of %d UEs\n", sdu_buffer_size, delivered, num_ues);
+  return delivered > 0;
+}
+
 bool nr_pdcp_data_req_drb(protocol_ctxt_t *ctxt_pP,
                           const srb_flag_t srb_flagP,
                           const rb_id_t rb_id,
