@@ -1009,6 +1009,32 @@ void nr_pdcp_reestablishment(ue_id_t ue_id,
  * DRB 1 because that is the only one a UE has in these testbeds; a session
  * mapped onto the right bearer is work for when there can be more than one.
  */
+/* The MBS session's PDCP context, as created when the broadcast context
+ * reaches the DU. One session, so one of each.
+ *
+ * It lives here because the two ends of the session sit in different places:
+ * the G-RNTI -- and with it the PDCP context id, NR_PDCP_MBS_CONTEXT_ID() --
+ * is allocated by the MAC when the group is created at the DU, while the
+ * payload arrives on the broadcast tunnel at the CU-UP. In one process that
+ * is a shared variable; across a CU/DU split the DU has to report the G-RNTI
+ * back in the F1AP Multicast Context Setup Response and the CU-UP carry it in
+ * the E1 bearer context. Neither exists yet, which is the same gap that stops
+ * the MRB's PDUs reaching the DU at all -- see nr_rlc_mrb_recv_sdu(). */
+static ue_id_t mbs_pdcp_context;
+static int mbs_pdcp_mrb_id;
+
+void nr_pdcp_mbs_set_context(ue_id_t context_id, int mrb_id)
+{
+  mbs_pdcp_context = context_id;
+  mbs_pdcp_mrb_id = mrb_id;
+  LOG_I(PDCP, "MBS: broadcast payload will go to PDCP context %lu, MRB %d\n", context_id, mrb_id);
+}
+
+/* Hand a broadcast session's payload to its MRB.
+ *
+ * Shaped as a gtpCallbackSDAP so the broadcast GTP-U tunnel can call it
+ * directly. Everything below this point -- PDCP, the PTM RLC entity, the
+ * group transmission on the G-RNTI -- is the standard path. */
 bool nr_pdcp_mbs_broadcast_deliver(protocol_ctxt_t *ctxt_pP,
                                    const ue_id_t ue_id,
                                    const srb_flag_t srb_flagP,
@@ -1023,43 +1049,11 @@ bool nr_pdcp_mbs_broadcast_deliver(protocol_ctxt_t *ctxt_pP,
                                    const bool rqi,
                                    const int pdusession_id)
 {
-  ue_id_t ue_ids[MAX_MOBILES_PER_GNB];
-  const int num_ues = nr_pdcp_get_num_ues(ue_ids, MAX_MOBILES_PER_GNB);
-  if (num_ues <= 0) {
-    LOG_D(PDCP, "MBS: broadcast payload with no UE attached to give it to\n");
-    return true;
+  if (mbs_pdcp_context == 0) {
+    LOG_D(PDCP, "MBS: broadcast payload with no MRB to put it on yet\n");
+    return false;
   }
-
-  /* Through SDAP, not straight into PDCP. A UE's downlink carries an SDAP
-   * header and the receiver strips one whether or not we wrote it, so
-   * handing PDCP a bare IP packet costs the first byte of the payload and
-   * the UE quietly drops it. This is the path ordinary downlink data takes
-   * on the CU-UP (gtpv1u_create_ngu_tunnel passes sdap_data_req), and the
-   * interim eBPF scheme ends up on it too -- by rewriting the packet into a
-   * UE's own tunnel it rejoins the normal flow further upstream.
-   *
-   * pdusession_id 1 and the QFI we were handed: one session per UE in these
-   * testbeds. */
-  int delivered = 0;
-  for (int i = 0; i < num_ues; i++) {
-    protocol_ctxt_t ctxt = {.enb_flag = 1, .rntiMaybeUEid = ue_ids[i]};
-    if (sdap_data_req(&ctxt,
-                      ue_ids[i],
-                      SRB_FLAG_NO,
-                      muiP,
-                      confirmP,
-                      sdu_buffer_size,
-                      sdu_buffer,
-                      mode,
-                      sourceL2Id,
-                      destinationL2Id,
-                      qfi,
-                      rqi,
-                      pdusession_id > 0 ? pdusession_id : 1))
-      delivered++;
-  }
-  LOG_D(PDCP, "MBS: broadcast payload of %d bytes delivered to %d of %d UEs\n", sdu_buffer_size, delivered, num_ues);
-  return delivered > 0;
+  return nr_pdcp_mrb_data_req(mbs_pdcp_context, mbs_pdcp_mrb_id, sdu_buffer, sdu_buffer_size);
 }
 
 bool nr_pdcp_data_req_drb(protocol_ctxt_t *ctxt_pP,

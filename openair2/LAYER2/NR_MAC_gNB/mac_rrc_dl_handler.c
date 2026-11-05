@@ -5,6 +5,7 @@
 #include "mac_rrc_dl_handler.h"
 
 #include "mac_proto.h"
+#include "openair2/LAYER2/nr_pdcp/nr_pdcp_mbs_test.h"
 #include "nr_radio_config.h"
 #include "openair2/F1AP/f1ap_ids.h"
 #include "openair2/F1AP/f1ap_common.h"
@@ -1411,4 +1412,14 @@ void broadcast_context_setup(const f1ap_broadcast_ctx_setup_t *req)
         "MBS: group for TMGI %02x%02x%02x%02x%02x%02x on G-RNTI %04x, MRB %ld\n",
         req->tmgi[0], req->tmgi[1], req->tmgi[2], req->tmgi[3], req->tmgi[4], req->tmgi[5],
         group->g_rnti, req->mrb_id);
+
+  /* The session's MRB. It belongs to the CU-UP's bearer setup, and lands here
+   * only because the PDCP context id is derived from the G-RNTI the MAC just
+   * allocated -- which the CU-UP has no way to learn until the DU reports it
+   * back in the F1AP response. The SN size and t-Reordering are the fixed
+   * values of nr_pdcp_mbs_test.h until the PDCP-Config of the session is
+   * carried over E1. */
+  const ue_id_t pdcp_context = NR_PDCP_MBS_CONTEXT_ID(group->g_rnti);
+  nr_pdcp_add_mrb(true, pdcp_context, req->mrb_id, 0, NR_MBS_TEST_PDCP_SN_SIZE, NR_MBS_TEST_PDCP_T_REORDERING);
+  nr_pdcp_mbs_set_context(pdcp_context, req->mrb_id);
 }
