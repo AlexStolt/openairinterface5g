@@ -113,8 +113,9 @@ nr_pdcp_ue_manager_t *nr_pdcp_sdap_get_ue_manager();
 
 int nr_pdcp_get_num_ues(ue_id_t *ue_list, int len);
 
-/* Hand a broadcast session's payload to every attached UE. Interim: see the
- * definition. Shaped as a gtpCallbackSDAP so a GTP-U tunnel can call it. */
+/* Hand a broadcast session's payload to its MRB. Shaped as a gtpCallbackSDAP
+ * so the broadcast GTP-U tunnel can call it. */
+void nr_pdcp_mbs_set_context(ue_id_t context_id, int mrb_id);
 bool nr_pdcp_mbs_broadcast_deliver(protocol_ctxt_t *ctxt_pP,
                                    const ue_id_t ue_id,
                                    const srb_flag_t srb_flagP,
