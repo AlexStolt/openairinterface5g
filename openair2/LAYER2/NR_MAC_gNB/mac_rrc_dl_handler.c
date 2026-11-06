@@ -1378,6 +1378,44 @@ void positioning_measurement_request(const f1ap_positioning_measurement_req_t *r
  * The session the core created has reached the component that puts it on the
  * air. Everything the DU needs to announce it -- the TMGI, the bearer -- now
  * comes from the network rather than from a file beside the binary. */
+/* Make every eligible UE a member of the cell's broadcast groups.
+ *
+ * Broadcast should not need this. A broadcast receiver learns the G-RNTI from
+ * SIB20 and the MCCH and the network never knows it exists (TS 38.300
+ * §16.10); there is no membership to maintain. Until that path exists the
+ * receivers have to be configured one by one, which is the *multicast*
+ * procedure borrowed for a broadcast session: every receiver must be
+ * RRC_CONNECTED and is given the G-RNTI in its own RRCReconfiguration. It
+ * puts real point-to-multipoint traffic on the air, which is the point, but
+ * it is not yet broadcast and a cell with no attached UE still sends nothing.
+ *
+ * Swept rather than triggered by a message because a UE only becomes
+ * eligible once it has a data bearer and has applied its CellGroupConfig,
+ * which is several steps after any single event. nr_mac_add_mbs_member()
+ * ignores a UE that has already joined and declines one that is mid
+ * reconfiguration, so repeating costs nothing.
+ *
+ * Must be called with the scheduler lock held. */
+void nr_mbs_join_eligible_ues(gNB_MAC_INST *mac, nr_cell_sched_t *cell)
+{
+  for (nr_mbs_group_t **g = mac->UE_info.mbs_group_list; *g != NULL; g++) {
+    if ((*g)->cell != cell)
+      continue;
+    FOR_EACH_CONNECTED_UE(&mac->UE_info, UE) {
+      if (!nr_mac_ue_is_active(UE))
+        continue;
+      /* A session is carried on a PDU session (TS 23.247 §7.2.1.3), so a UE
+       * without a data bearer has nothing to receive it on yet. */
+      bool has_drb = false;
+      FOR_EACH_SEQ_ARR(const nr_lc_config_t *, c, &UE->UE_sched_ctrl.lc_config)
+        has_drb |= c->lcid >= DL_SCH_LCID_DTCH;
+      if (!has_drb)
+        continue;
+      nr_mac_add_mbs_member(mac, *g, UE);
+    }
+  }
+}
+
 void broadcast_context_setup(const f1ap_broadcast_ctx_setup_t *req)
 {
   DevAssert(req != NULL);

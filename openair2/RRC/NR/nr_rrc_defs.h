@@ -453,6 +453,8 @@ typedef struct nr_mac_rrc_dl_if_s {
 
 typedef struct cucp_cuup_if_s {
   cucp_cuup_bearer_context_setup_func_t bearer_context_setup;
+  /* MBS broadcast: the session belongs to the cell, not to a UE */
+  void (*bc_bearer_context_setup)(const struct e1ap_bc_bearer_setup_req_s *req);
   cucp_cuup_bearer_context_mod_func_t bearer_context_mod;
   cucp_cuup_bearer_context_mod_confirm_func_t bearer_context_mod_confirm;
   cucp_cuup_bearer_context_release_func_t bearer_context_release;

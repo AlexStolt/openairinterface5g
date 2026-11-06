@@ -155,6 +155,7 @@ typedef struct gtpv1u_gnb_delete_tunnel_req_s gtpv1u_gnb_delete_tunnel_req_t;
 /* Receive a broadcast MBS session's multicast distribution. See the
  * definition for why this needs a socket of its own. */
 instance_t gtpv1InitMulticast(in_addr_t group, in_addr_t source, in_addr_t local, uint16_t port);
+in_addr_t gtpv1uGetLocalAddr(instance_t instance);
 /* Accept a TEID chosen by the core rather than allocating one. See the
  * definition for why a broadcast session needs this. */
 bool gtpv1uRegisterIncomingTeid(teid_t incoming_teid, ue_id_t ue_id, int rb_id, gtpCallbackSDAP callBack);

@@ -691,6 +691,19 @@ static void* gtpv1uReceiver(void *thr);
 
 /* Start receiving a broadcast session's multicast distribution. Mirrors
  * gtpv1Init, but on a group instead of this gNB's own address. */
+/* The address a GTP-U instance is bound to. Needed to join a multicast group
+ * on the interface that faces the core, which is the same one N3 uses. */
+in_addr_t gtpv1uGetLocalAddr(instance_t instance)
+{
+  pthread_mutex_lock(&globGtp.gtp_lock);
+  auto it = globGtp.instances.find(compatInst(instance));
+  in_addr_t addr = 0;
+  if (it != globGtp.instances.end() && it->second.ipVersion == 4)
+    memcpy(&addr, it->second.foundAddr, sizeof(addr));
+  pthread_mutex_unlock(&globGtp.gtp_lock);
+  return addr;
+}
+
 instance_t gtpv1InitMulticast(in_addr_t group, in_addr_t source, in_addr_t local, uint16_t port)
 {
   pthread_mutex_lock(&globGtp.gtp_lock);

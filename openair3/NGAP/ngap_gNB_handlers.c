@@ -1717,24 +1717,23 @@ static int ngap_gNB_handle_broadcast_session_setup(sctp_assoc_t assoc_id, uint32
    * now, so the context id is fixed; a session table replaces it when there
    * can be more than one. */
   {
-    MessageDef *msg = itti_alloc_new_message(TASK_NGAP, 0, E1AP_BC_BEARER_CONTEXT_SETUP_REQ);
-    /* The E1AP task takes the association from here, as it does for every
-     * other bearer context. */
-    msg->ittiMsgHeader.originInstance = get_any_cuup();
-    e1ap_bc_bearer_setup_req_t *req = &E1AP_BC_BEARER_CONTEXT_SETUP_REQ(msg);
-    memset(req, 0, sizeof(*req));
-    req->gNB_cu_cp_mbs_e1ap_id = 1;
-    memcpy(req->tmgi, tmgi->buf, sizeof(req->tmgi));
-    req->mrb_id = 1;
-    req->sst = 1;
-    req->tnl_present = mbs_tnl.tnl_present;
-    req->multicast_addr = mbs_tnl.multicast_addr;
-    req->source_addr = mbs_tnl.source_addr;
-    req->c_teid = mbs_tnl.c_teid;
-    /* Instance 0, as the RRC side does: the E1AP task is registered there,
-     * and the CU-UP association is resolved at the send. */
-    itti_send_msg_to_task(TASK_CUCP_E1, 0, msg);
-    NGAP_INFO("[SCTP %u] Broadcast session handed to the user plane over E1\n", assoc_id);
+    e1ap_bc_bearer_setup_req_t req = {0};
+    req.gNB_cu_cp_mbs_e1ap_id = 1;
+    memcpy(req.tmgi, tmgi->buf, sizeof(req.tmgi));
+    req.mrb_id = 1;
+    req.sst = 1;
+    req.tnl_present = mbs_tnl.tnl_present;
+    req.multicast_addr = mbs_tnl.multicast_addr;
+    req.source_addr = mbs_tnl.source_addr;
+    req.c_teid = mbs_tnl.c_teid;
+    /* Through the CU-CP/CU-UP interface, so a monolithic gNB calls the
+     * handler directly and a split one sends it over E1AP -- the same
+     * arrangement every other bearer operation uses. */
+    const gNB_RRC_INST *rrc = RC.nrrrc[0];
+    if (rrc != NULL && rrc->cucp_cuup.bc_bearer_context_setup != NULL) {
+      rrc->cucp_cuup.bc_bearer_context_setup(&req);
+      NGAP_INFO("[SCTP %u] Broadcast session handed to the user plane\n", assoc_id);
+    }
   }
 
   /* And to the DU, which is what puts it on the air. The same call reaches
