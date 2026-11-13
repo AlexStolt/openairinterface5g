@@ -1549,6 +1549,12 @@ static int ngap_gNB_handle_dl_ran_status_transfer(sctp_assoc_t assoc_id, uint32_
  * which needs the MRB to be able to deliver, behind group scheduling.
  * Until then the DU still reads the session from its descriptor file, and
  * this handler proves the standard path works. */
+/* the broadcast session of this gNB: one for now, see the fixed context ids below */
+static struct {
+  bool active;
+  uint8_t tmgi[6];
+} mbs_broadcast_session;
+
 static int ngap_gNB_handle_broadcast_session_setup(sctp_assoc_t assoc_id, uint32_t stream, NGAP_NGAP_PDU_t *pdu)
 {
   NGAP_BroadcastSessionSetupRequest_t *container;
@@ -1685,6 +1691,96 @@ static int ngap_gNB_handle_broadcast_session_setup(sctp_assoc_t assoc_id, uint32
       NGAP_INFO("[SCTP %u] Broadcast session handed to the DU (assoc_id %d)\n", assoc_id, du);
     }
   }
+  mbs_broadcast_session.active = true;
+  memcpy(mbs_broadcast_session.tmgi, tmgi->buf, sizeof(mbs_broadcast_session.tmgi));
+  return 0;
+}
+
+/* Take the broadcast session down in this gNB: the user plane first, so that
+ * nothing arrives for a session that is no longer on the air, then the DU. */
+static bool mbs_broadcast_session_release(void)
+{
+  const gNB_RRC_INST *rrc = RC.nrrrc[0];
+  if (!mbs_broadcast_session.active || rrc == NULL)
+    return false;
+  if (rrc->cucp_cuup.bc_bearer_context_release != NULL)
+    rrc->cucp_cuup.bc_bearer_context_release();
+  if (rrc->mac_rrc.broadcast_context_release != NULL) {
+    f1ap_broadcast_ctx_release_t req = {.gNB_cu_mbs_f1ap_id = 1};
+    memcpy(req.tmgi, mbs_broadcast_session.tmgi, sizeof(req.tmgi));
+    plmn_id_t plmn;
+    uint64_t nr_cellid;
+    const sctp_assoc_t du = get_any_du_cell(&plmn, &nr_cellid);
+    rrc->mac_rrc.broadcast_context_release(du, &req);
+  }
+  mbs_broadcast_session.active = false;
+  return true;
+}
+
+/* Release the broadcast session without the 5GC asking for it.
+ *
+ * A test aid: the 5G-MAG core accepts the deletion of a session but never
+ * sends BroadcastSessionReleaseRequest, so the procedure below cannot be
+ * reached from it. The core is not told either, and keeps distributing the
+ * session; this gNB has left the group by then. */
+bool ngap_gNB_mbs_broadcast_release_local(void)
+{
+  return mbs_broadcast_session_release();
+}
+
+/* BroadcastSessionReleaseRequest (TS 38.413 §8.17.2): the 5GC ends a broadcast
+ * session. Non UE-associated, like its setup. */
+static int ngap_gNB_handle_broadcast_session_release(sctp_assoc_t assoc_id, uint32_t stream, NGAP_NGAP_PDU_t *pdu)
+{
+  UNUSED(stream);
+  DevAssert(pdu != NULL);
+  NGAP_BroadcastSessionReleaseRequest_t *container = &pdu->choice.initiatingMessage->value.choice.BroadcastSessionReleaseRequest;
+  NGAP_BroadcastSessionReleaseRequestIEs_t *ie;
+  ngap_gNB_amf_data_t *amf_desc_p = ngap_gNB_get_AMF(NULL, assoc_id, 0);
+  if (amf_desc_p == NULL) {
+    NGAP_ERROR("[SCTP %u] Received broadcast session release for non existing AMF context\n", assoc_id);
+    return -1;
+  }
+  NGAP_FIND_PROTOCOLIE_BY_ID(NGAP_BroadcastSessionReleaseRequestIEs_t, ie, container, NGAP_ProtocolIE_ID_id_MBS_SessionID, true);
+  if (ie == NULL) {
+    NGAP_ERROR("[SCTP %u] Broadcast session release without an MBS Session ID\n", assoc_id);
+    return -1;
+  }
+  const NGAP_TMGI_t *tmgi = &ie->value.choice.MBS_SessionID.tMGI;
+  if (tmgi->size != sizeof(mbs_broadcast_session.tmgi)) {
+    NGAP_ERROR("[SCTP %u] Broadcast session release with a malformed TMGI (%d octets)\n", assoc_id, (int)tmgi->size);
+    return -1;
+  }
+  if (mbs_broadcast_session.active && memcmp(mbs_broadcast_session.tmgi, tmgi->buf, tmgi->size) == 0) {
+    mbs_broadcast_session_release();
+    NGAP_INFO("[SCTP %u] Broadcast session released\n", assoc_id);
+  } else {
+    /* answered all the same: the session is not there, which is what was asked for */
+    NGAP_WARN("[SCTP %u] Release of a broadcast session this gNB does not have\n", assoc_id);
+  }
+
+  NGAP_NGAP_PDU_t out = {0};
+  out.present = NGAP_NGAP_PDU_PR_successfulOutcome;
+  asn1cCalloc(out.choice.successfulOutcome, head);
+  head->procedureCode = NGAP_ProcedureCode_id_BroadcastSessionRelease;
+  head->criticality = NGAP_Criticality_reject;
+  head->value.present = NGAP_SuccessfulOutcome__value_PR_BroadcastSessionReleaseResponse;
+  NGAP_BroadcastSessionReleaseResponse_t *resp = &head->value.choice.BroadcastSessionReleaseResponse;
+  asn1cSequenceAdd(resp->protocolIEs.list, NGAP_BroadcastSessionReleaseResponseIEs_t, resp_ie);
+  resp_ie->id = NGAP_ProtocolIE_ID_id_MBS_SessionID;
+  resp_ie->criticality = NGAP_Criticality_reject;
+  resp_ie->value.present = NGAP_BroadcastSessionReleaseResponseIEs__value_PR_MBS_SessionID;
+  OCTET_STRING_fromBuf(&resp_ie->value.choice.MBS_SessionID.tMGI, (const char *)tmgi->buf, tmgi->size);
+
+  uint8_t *buffer = NULL;
+  uint32_t length = 0;
+  if (ngap_gNB_encode_pdu(&out, &buffer, &length) < 0) {
+    NGAP_ERROR("[SCTP %u] Failed to encode broadcast session release response\n", assoc_id);
+    ASN_STRUCT_FREE_CONTENTS_ONLY(asn_DEF_NGAP_NGAP_PDU, &out);
+    return -1;
+  }
+  ASN_STRUCT_FREE_CONTENTS_ONLY(asn_DEF_NGAP_NGAP_PDU, &out);
+  ngap_gNB_itti_send_sctp_data_req(amf_desc_p->ngap_gNB_instance->instance, assoc_id, buffer, length, 0);
   return 0;
 }
 
@@ -1763,7 +1859,7 @@ const ngap_message_decoded_callback ngap_messages_callback[][3] = {
     {0, 0, 0}, /* AMFCPRelocationIndication */
     {0, 0, 0}, /* ConnectionEstablishmentIndication */
     {0, 0, 0}, /* BroadcastSessionModification */
-    {0, 0, 0}, /* BroadcastSessionRelease */
+    {ngap_gNB_handle_broadcast_session_release, 0, 0}, /* BroadcastSessionRelease */
     {ngap_gNB_handle_broadcast_session_setup, 0, 0}, /* BroadcastSessionSetup */
     {0, 0, 0}, /* DistributionSetup */
     {0, 0, 0}, /* DistributionRelease */

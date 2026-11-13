@@ -394,6 +394,8 @@ static void nr_rrc_ue_process_sib20(NR_UE_RRC_INST_t *rrc, const NR_SIB20_r17_t 
     if ((rrc->mbs_broadcast_lcids & ~lcids) & (1ULL << lcid)) {
       RRCLOG_A("MBS: broadcast session with MTCH on LCID %d not announced anymore\n", lcid);
       nr_rlc_release_entity(rrc->ue_id, lcid);
+      /* with its MRB: a session announced on this LCID later is another one, numbered from zero again */
+      nr_pdcp_release_mrb(rrc->ue_id, lcid);
     }
   }
   rrc->mbs_broadcast_lcids &= lcids;

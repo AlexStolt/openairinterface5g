@@ -43,5 +43,6 @@ byte_array_t encode_cellgroup_config(const NR_CellGroupConfig_t *cellGroup);
 
 
 void broadcast_context_setup(const f1ap_broadcast_ctx_setup_t *req);
+void broadcast_context_release(const f1ap_broadcast_ctx_release_t *req);
 
 #endif /* MAC_RRC_DL_HANDLER_H */

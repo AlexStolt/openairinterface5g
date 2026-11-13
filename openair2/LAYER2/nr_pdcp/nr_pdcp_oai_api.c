@@ -621,6 +621,20 @@ void nr_pdcp_add_mrb(bool is_gnb, ue_id_t ue_id, int mrb_id, int pdusession_id, 
   nr_pdcp_manager_unlock(nr_pdcp_ue_manager);
 }
 
+void nr_pdcp_release_mrb(ue_id_t ue_id, int mrb_id)
+{
+  nr_pdcp_manager_lock(nr_pdcp_ue_manager);
+  nr_pdcp_ue_t *ue = nr_pdcp_manager_get_ue(nr_pdcp_ue_manager, ue_id);
+  for (int i = 0; i < NR_PDCP_MAX_MRBS; i++) {
+    if (ue->mrb[i] && ue->mrb[i]->rb_id == mrb_id) {
+      ue->mrb[i]->delete_entity(ue->mrb[i]);
+      ue->mrb[i] = NULL;
+      LOG_I(PDCP, "%lx: released MRB %d\n", ue_id, mrb_id);
+    }
+  }
+  nr_pdcp_manager_unlock(nr_pdcp_ue_manager);
+}
+
 bool nr_pdcp_mrb_data_req(ue_id_t ue_id, int mrb_id, const uint8_t *buf, int size)
 {
   nr_pdcp_manager_lock(nr_pdcp_ue_manager);
@@ -1089,7 +1103,8 @@ void nr_pdcp_mbs_set_context(ue_id_t context_id, int mrb_id)
 {
   mbs_pdcp_context = context_id;
   mbs_pdcp_mrb_id = mrb_id;
-  LOG_I(PDCP, "MBS: broadcast payload will go to PDCP context %lu, MRB %d\n", context_id, mrb_id);
+  if (context_id != 0)
+    LOG_I(PDCP, "MBS: broadcast payload will go to PDCP context %lu, MRB %d\n", context_id, mrb_id);
 }
 
 /* Hand a broadcast session's payload to its MRB.

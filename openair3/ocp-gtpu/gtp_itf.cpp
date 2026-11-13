@@ -757,6 +757,14 @@ int gtpv1Term(instance_t instance)
   return 0;
 }
 
+/* Stop listening on a TEID registered with gtpv1uRegisterIncomingTeid(). */
+void gtpv1uUnregisterIncomingTeid(teid_t incoming_teid)
+{
+  pthread_mutex_lock(&globGtp.gtp_lock);
+  globGtp.te2ue_mapping.erase(incoming_teid);
+  pthread_mutex_unlock(&globGtp.gtp_lock);
+}
+
 void GtpuUpdateTunnelOutgoingAddressAndTeid(instance_t instance,
                                             ue_id_t ue_id,
                                             ebi_t bearer_id,

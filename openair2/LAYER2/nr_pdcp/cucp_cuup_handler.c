@@ -146,6 +146,13 @@ static instance_t get_n3_gtp_instance(void)
  * monolithic gNB, and over E1AP when the CU is split. Only the caller
  * differs -- what has to happen is the same, because N3 terminates wherever
  * the user plane lives. */
+/* the broadcast tunnel being terminated: one session for now */
+static struct {
+  bool up;
+  instance_t group_instance;
+  teid_t c_teid;
+} mbs_broadcast_tunnel;
+
 void e1_bc_bearer_context_setup(const e1ap_bc_bearer_setup_req_t *req)
 {
   LOG_A(E1AP,
@@ -167,7 +174,25 @@ void e1_bc_bearer_context_setup(const e1ap_bc_bearer_setup_req_t *req)
     LOG_E(E1AP, "MBS: could not listen on the broadcast TEID 0x%x\n", req->c_teid);
     return;
   }
+  mbs_broadcast_tunnel.up = true;
+  mbs_broadcast_tunnel.group_instance = mc;
+  mbs_broadcast_tunnel.c_teid = req->c_teid;
   LOG_A(E1AP, "MBS: broadcast user plane up on TEID 0x%x\n", req->c_teid);
+}
+
+/* Take a broadcast session's user plane down again: stop listening on its
+ * TEID and leave the group the 5GC distributes it to. Reached the same two
+ * ways as the setup. */
+void e1_bc_bearer_context_release(void)
+{
+  if (!mbs_broadcast_tunnel.up) {
+    LOG_W(E1AP, "MBS: no broadcast user plane to release\n");
+    return;
+  }
+  gtpv1uUnregisterIncomingTeid(mbs_broadcast_tunnel.c_teid);
+  gtpv1Term(mbs_broadcast_tunnel.group_instance);
+  mbs_broadcast_tunnel.up = false;
+  LOG_A(E1AP, "MBS: broadcast user plane released, TEID 0x%x\n", mbs_broadcast_tunnel.c_teid);
 }
 
 /** @brief Fill and send request to create GTP-U tunnel (N3). One tunnel per PDU session. */

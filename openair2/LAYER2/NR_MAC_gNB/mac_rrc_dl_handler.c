@@ -1472,3 +1472,35 @@ void broadcast_context_setup(const f1ap_broadcast_ctx_setup_t *req)
   nr_pdcp_add_mrb(true, pdcp_context, req->mrb_id, 0, NR_MBS_TEST_PDCP_SN_SIZE, NR_MBS_TEST_PDCP_T_REORDERING);
   nr_pdcp_mbs_set_context(pdcp_context, req->mrb_id);
 }
+
+/* Takes a broadcast session off the air: the group and its RLC entity go, and
+ * SIB20 stops announcing it, which is how the receivers find out. */
+void broadcast_context_release(const f1ap_broadcast_ctx_release_t *req)
+{
+  DevAssert(req != NULL);
+  gNB_MAC_INST *mac = RC.nrmac[0];
+  NR_SCHED_LOCK(&mac->sched_lock);
+  const nr_mbs_group_t *group = NULL;
+  for (nr_mbs_group_t *const *g = mac->UE_info.mbs_group_list; *g != NULL && group == NULL; g++) {
+    if ((*g)->config.broadcast && memcmp((*g)->config.tmgi, req->tmgi, sizeof(req->tmgi)) == 0)
+      group = *g;
+  }
+  if (group == NULL) {
+    NR_SCHED_UNLOCK(&mac->sched_lock);
+    LOG_E(NR_MAC, "MBS: release of a broadcast session this DU does not have\n");
+    return;
+  }
+  const rnti_t g_rnti = group->g_rnti;
+  nr_cell_sched_t *cell = group->cell;
+  nr_mac_release_mbs_group(mac, g_rnti);
+  nr_mac_update_sib20(cell);
+  NR_SCHED_UNLOCK(&mac->sched_lock);
+
+  /* the MRB was created here, so it goes here too */
+  nr_pdcp_mbs_set_context(0, 0);
+  nr_pdcp_remove_UE(NR_PDCP_MBS_CONTEXT_ID(g_rnti));
+  LOG_A(NR_MAC,
+        "MBS: broadcast session for TMGI %02x%02x%02x%02x%02x%02x released, G-RNTI %04x\n",
+        req->tmgi[0], req->tmgi[1], req->tmgi[2], req->tmgi[3], req->tmgi[4], req->tmgi[5],
+        g_rnti);
+}
