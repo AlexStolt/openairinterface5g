@@ -12,38 +12,31 @@ multicast tunnel.
 
 ## Where this is today
 
-MBS has two service types, and this setup is a mixture of them. It is worth
-knowing which half is which before reading the rest.
+MBS has two service types. A **broadcast** session is sent to everyone in the
+service area: receivers do not join, the network does not know they exist,
+and they find the session by reading what the cell announces, so they can be
+idle. A **multicast** session is sent only to UEs that joined it. They are
+known individually, which is what makes HARQ feedback and retransmission
+possible, and each is told about the session in its own RRCReconfiguration.
 
-A **broadcast** session is sent to everyone in the service area. Receivers do
-not join and the network does not know they exist, so they can be idle, and
-they find the session by reading it from the system information. A
-**multicast** session is sent only to UEs that joined it. They are known
-individually, which is what makes HARQ feedback and retransmission possible,
-and each is told about the session in its own RRCReconfiguration.
+What runs here is broadcast:
 
-What runs here:
+* **The core creates a broadcast session.** It allocates a TMGI, distributes
+  the session to a multicast group with one common TEID shared by every gNB
+  in the area, and announces it with `BroadcastSessionSetup` over NGAP.
+* **The cell announces it.** SIB20 lists the sessions of the cell, each with
+  its TMGI, its G-RNTI and the configuration of its radio bearer, and gives
+  the CORESET of the PDCCHs; SIB1 names the search space.
+* **Receivers configure themselves** from that, with no signalling of their
+  own. The gNB does not know who receives, transmits whether or not anybody
+  is connected, and a UE keeps receiving in RRC_IDLE.
 
-* **The session is a broadcast session.** The core allocates a TMGI and
-  distributes it to a multicast group with one common TEID shared by every
-  gNB in the area, and announces it with `BroadcastSessionSetup` over NGAP.
-  Nothing tracks members in the core.
-* **Delivery is the standard shared one** — a single transmission on a
-  G-RNTI with DCI format 4_1 in a common search space, carried on an MRB
-  through a point-to-multipoint RLC entity. Broadcast and multicast use the
-  same mechanism here.
-* **Receivers are configured one by one, which is the multicast way.** The
-  G-RNTI reaches each UE in its own RRCReconfiguration rather than in SIB20
-  and the MCCH. Two consequences follow: every receiver has to be connected,
-  and a cell with no UE attached transmits nothing.
+HARQ feedback is off, because a broadcast session has no members to report
+with, and the session is sent at a fixed MCS for the same reason. Multicast,
+where feedback is on, is described in [MBS.md](./MBS.md).
 
-So the control plane and the data path are broadcast, and only the last step
-— how a UE finds out the group exists — is not. Announcing the session in
-the system information is what remains, and it is also what would let an
-idle UE receive.
-
-HARQ feedback is switched off, because a broadcast session has no members to
-report with. Multicast, where it is on, is described in [MBS.md](./MBS.md).
+Three things are not as the specifications have them yet; see
+[Known gaps](#known-gaps).
 
 ## What this needs
 
@@ -54,6 +47,10 @@ report with. Multicast, where it is on, is described in [MBS.md](./MBS.md).
   transmits them, and `nr_rlc_mrb_recv_sdu()` only works when PDCP and RLC
   run in the same process. Neither a CU/DU nor a CU-CP/CU-UP split can carry
   this yet.
+* **SIB20 switched on in the gNB**, with `du_sibs = [20];` in its
+  configuration. A cell that schedules any other SIB also has to schedule one
+  of SIB2 to SIB14, hence `cu_sibs = [2];` next to it. The configuration file
+  of this tutorial has both.
 * Three subscribers, IMSI `999700123456701`, `702` and `703`. They are in
   `subscribers.json` next to the compose file and are imported automatically.
 
@@ -166,11 +163,17 @@ The gNB log now shows the session arriving and the group being created:
 [GTPU]   MBS: joined group 239.0.0.4 on 192.168.77.101, port 2152
 [GTPU]   MBS: listening for the broadcast session on TEID 0x7742
 [RLC]    fb30: added PTM RLC entity of MRB 1 on LCID 32
-[NR_MAC] added MBS group G-RNTI fb30: LCID 32, HARQ feedback disabled, PTM HARQ processes 0xf000
+[NR_MAC] added MBS broadcast session G-RNTI fb30: LCID 32, HARQ feedback disabled, PTM HARQ processes 0xf000
 [PDCP]   10000fb30: added MRB 1 (SN size 12)
-[NR_MAC] UE 2f64 joined MBS group G-RNTI fb30 (1 members)
-[NR_MAC] UE d8dc joined MBS group G-RNTI fb30 (2 members)
-[NR_MAC] UE ff10 joined MBS group G-RNTI fb30 (3 members)
+```
+
+Nothing is sent to the UEs for it. Each one finds the session the next time
+it reads SIB20, within a second or two, and says so in its own log:
+
+```
+[RLC]    0000: added PTM RLC entity of MRB 32 on LCID 32
+[PDCP]   0: added MRB 32 (SN size 12)
+[NR_RRC] MBS: broadcast session with service ID 202621 announced on G-RNTI fb30, MTCH on LCID 32
 ```
 
 Note the group address the core chose (`239.0.0.4` above) is not the one the
@@ -209,10 +212,17 @@ done
 All three receive the same packets from **one** transmission on the G-RNTI,
 and the three counts are the same for that reason.
 
-Expect 15 to 20 of 20; it varies from run to run. Broadcast has no feedback: the
-gNB does not know who is listening, so nothing is retransmitted and what is
-lost stays lost. Multicast is where ACK/NACK and retransmission belong; see
+Expect 20 of 20. Broadcast has no feedback: the gNB does not know who is
+listening, so nothing is retransmitted and what is lost stays lost.
+Multicast is where ACK/NACK and retransmission belong; see
 [MBS.md](./MBS.md).
+
+The gNB counts what it sent in its periodic statistics, and does so with no
+UE in the cell as well:
+
+```
+MBS broadcast session G-RNTI fb30: 20 PTM transmissions, 700 bytes, MCS 9
+```
 
 ## Stop
 
@@ -225,6 +235,16 @@ the next start.
 
 ## Known gaps
 
-Besides the configuration of the receivers described at the top, the UE
-writes what it receives to the tun of its first PDU session rather than to
-the session's multicast address.
+* **There is no MCCH.** The list of sessions belongs on it, and SIB20 should
+  only say where it is. Until it exists the message that goes on the MCCH,
+  `MBSBroadcastConfiguration`, is carried inside SIB20, and the UE reads
+  SIB20 again every 1.28 s to follow it.
+* **The PDCCH uses DCI format 4_1**, the multicast one, where broadcast has
+  format 4_0, and a session takes its HARQ processes from the ones of unicast
+  rather than having a broadcast process of its own. The gNB therefore keeps
+  four HARQ processes of every connected UE away from unicast while a
+  session exists.
+* **The UE delivers what it receives to the interface of its first PDU
+  session**, as it has no interface for MBS sessions. A UE that never had a
+  PDU session receives the session but has nowhere to deliver it.
+* The MCS of a session is fixed in the code (9).
