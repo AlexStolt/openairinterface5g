@@ -1441,9 +1441,9 @@ void broadcast_context_setup(const f1ap_broadcast_ctx_setup_t *req)
       .harq_feedback = NR_MBS_HARQ_FEEDBACK_DISABLED,
       .num_harq = 4,
       .broadcast = true,
-      /* The highest QPSK entry of the table. It belongs in the
-       * configuration, next to whatever decides the coverage of a session. */
-      .mcs = 9,
+      /* From the configuration (mbs_broadcast_mcs): one value for the cell,
+       * until a session brings its own requirements along. */
+      .mcs = cell->mbs_broadcast_mcs,
   };
   memcpy(config.tmgi, req->tmgi, sizeof(config.tmgi));
   const nr_mbs_group_t *group = nr_mac_add_mbs_group(mac, cell, &config);

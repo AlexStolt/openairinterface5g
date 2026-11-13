@@ -1438,6 +1438,8 @@ typedef struct nr_cell_sched_s {
   NR_sched_pdsch_t sib1_pdsch[MAX_NUM_OF_SSB];
   periodic_ue_sched_t periodic_srs_config;
 
+  /// MCS of the MBS broadcast sessions of the cell (mbs_broadcast_mcs)
+  int mbs_broadcast_mcs;
   /// CORESET and Type-3 CSS of pdcch-ConfigMulticast in the CFR for DCI format 4_1 with CRC scrambled by G-RNTI
   /// (TS 38.213 §10.1)
   NR_ControlResourceSet_t *mbs_coreset;
