@@ -32,7 +32,8 @@ What runs here is broadcast:
   is connected, and a UE keeps receiving in RRC_IDLE.
 
 HARQ feedback is off, because a broadcast session has no members to report
-with, and the session is sent at a fixed MCS for the same reason. Multicast,
+with, and the session is sent at a fixed MCS for the same reason: 9 unless
+`mbs_broadcast_mcs` in the `MACRLCs` section says otherwise. Multicast,
 where feedback is on, is described in [MBS.md](./MBS.md).
 
 The remaining specification gaps are listed under
@@ -231,6 +232,33 @@ UE in the cell as well:
 MBS broadcast session G-RNTI fb30: 20 PTM transmissions, 700 bytes, MCS 9
 ```
 
+## Release the session
+
+The gNB releases a session when the core sends `BroadcastSessionReleaseRequest`:
+it leaves the group, removes the session from SIB20, and every UE stops
+receiving it the next time it reads SIB20.
+
+The 5G-MAG core does not send that message. It accepts the deletion of a
+session and keeps distributing it. To see the release anyway, start the gNB
+with its telnet server, by adding
+`--telnetsrv --telnetsrv.shrmod rrc --telnetsrv.listenaddr 192.168.77.101` to
+its options in the compose file, and ask it to release the session itself:
+
+```bash
+telnet 192.168.77.101 9090
+softmodem_gnb> rrc release_mbs_broadcast
+```
+
+The gNB and the UEs say so:
+
+```
+[E1AP]   MBS: broadcast user plane released, TEID 0xeea0
+[NR_MAC] MBS: broadcast session for TMGI 200399000000 released, G-RNTI cd01
+[NR_RRC] MBS: broadcast session with MTCH on LCID 32 not announced anymore
+```
+
+A session created afterwards is announced and received like the first one.
+
 ## Stop
 
 ```bash
@@ -254,4 +282,3 @@ the next start.
 * **The UE delivers what it receives to the interface of its first PDU
   session**, as it has no interface for MBS sessions. A UE that never had a
   PDU session receives the session but has nowhere to deliver it.
-* The MCS of a session is fixed in the code (9).
