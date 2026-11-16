@@ -92,6 +92,7 @@ THREAD_STRUCT thread_struct;
  * rrc_gNB.c, but defined in RAN functions. In order to avoid pulling this in
  * here as well, only provide a prototype (and abort if they are ever called). */
 
+void e1_bc_bearer_context_setup(const e1ap_bc_bearer_setup_req_t *req) { abort(); }
 void e1_bearer_context_setup(const e1ap_bearer_setup_req_t *req) { abort(); }
 void e1_bearer_context_modif(const e1ap_bearer_mod_req_t *req) { abort(); }
 void e1_bearer_context_mod_confirm(const e1ap_bearer_mod_confirm_t *conf) { abort(); }

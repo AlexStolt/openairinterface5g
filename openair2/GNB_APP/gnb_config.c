@@ -2086,7 +2086,7 @@ void RCconfig_nr_macrlc(configmodule_interface_t *cfg)
   nrmac->f1_config.setup_req = req;
   nrmac->f1_config.gnb_id = gnb_id;
   /* TEMPORARY: MBS test adapter (config file MBS group + test SDUs), replaced by the CP/RLC providers */
-  nr_mbs_test_adapter_init(nrmac, cell);
+  nr_mbs_test_adapter_init(nrmac, nr_mac_get_cell_by_idx(nrmac, 0));
 
   free(name); /* read_du_cell_info() allocated memory */
 }
