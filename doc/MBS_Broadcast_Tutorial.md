@@ -62,7 +62,7 @@ The remaining specification gaps are listed under
 Use the 5G-MAG fork of Open5GS, which adds the MBS functions:
 
 ```bash
-git clone --branch 5mbs https://github.com/5G-MAG/open5gs.git
+git clone --branch 5mbs-development https://github.com/5G-MAG/open5gs.git
 ```
 
 Build it the way Open5GS documents (`meson` and `ninja`); the fork adds no
@@ -88,9 +88,11 @@ policy during registration, and without it every UE is rejected with cause 95,
 It also needs MongoDB to be up before it starts, so the compose file waits for
 the database to answer before starting the core.
 
-Two more things the core needs for this tutorial: a `tun` interface for the
-user plane (`ogstun`, as Open5GS documents), and a multicast routing daemon
-such as `smcrouted`, used below to route the group into that interface.
+The core also needs a `tun` interface for the user plane (`ogstun`, as
+Open5GS documents). The MB-UPF routes the session's multicast group into it
+by itself (`upf.mbs.multicast_router` in `core.yaml`); for that it needs the
+kernel's multicast routing to itself, so do not run a routing daemon such as
+`smcrouted` next to it.
 
 Package the result however you like and point the compose file at it with
 `CN_IMG`. What the compose file expects of that image:
@@ -138,33 +140,29 @@ check the core first — see the note on `open5gs-pcfd` above.
 
 ## Create the broadcast session
 
-The MB-SMF allocates the TMGI and tells the gNB over NGAP. `239.0.0.25` is
-the address the application sends to.
+The MB-SMF allocates the TMGI and tells the gNB over NGAP. The application
+server `mbs-as` (`192.168.77.20`) sends to `239.0.0.25`; together they are the
+source-specific multicast address of the session.
 
 ```bash
 docker exec mbs-cn curl -s --http2-prior-knowledge -X POST \
   -H 'Content-Type: application/json' \
-  -d '{"mbsSession":{"ssm":{"sourceIpAddr":{"ipv4Addr":"192.168.77.10"},
+  -d '{"mbsSession":{"ssm":{"sourceIpAddr":{"ipv4Addr":"192.168.77.20"},
        "destIpAddr":{"ipv4Addr":"239.0.0.25"}},"tmgiAllocReq":true,
-       "serviceType":"BROADCAST"}}' \
+       "serviceType":"BROADCAST","snssai":{"sst":1},
+       "mbsServiceArea":{"tais":[{"plmnId":{"mcc":"999","mnc":"70"},"tac":"000001"}]}}}' \
   127.0.0.4:7777/nmbsmf-mbssession/v1/mbs-sessions
-```
-
-Route the group into the core's tunnel interface:
-
-```bash
-docker exec mbs-cn smcroutectl add eth0 239.0.0.25 ogstun
 ```
 
 The gNB log now shows the session arriving and the group being created:
 
 ```
-[NGAP]   Broadcast session setup: TMGI 202621000000 (6 octets)
-[NGAP]   Broadcast session user plane: group 239.0.0.4 source 192.168.55.5 C-TEID 0x00007742
+[NGAP]   Broadcast session setup: TMGI bed4da99f907 (6 octets)
+[NGAP]   Broadcast session user plane: group 239.0.0.4 source 192.168.77.10 C-TEID 0x00002b17
 [NGAP]   Broadcast session setup acknowledged
-[E1AP]   MBS: broadcast bearer context for TMGI 202621000000, MRB 1, SST 1
+[E1AP]   MBS: broadcast bearer context for TMGI bed4da99f907, MRB 1, SST 1
 [GTPU]   MBS: joined group 239.0.0.4 on 192.168.77.101, port 2152
-[GTPU]   MBS: listening for the broadcast session on TEID 0x7742
+[GTPU]   MBS: listening for the broadcast session on TEID 0x2b17
 [RLC]    fb30: added PTM RLC entity of MRB 1 on LCID 32
 [NR_MAC] added MBS broadcast session G-RNTI fb30: LCID 32, HARQ feedback disabled, PTM HARQ processes 0xf000
 [PDCP]   10000fb30: added MRB 1 (SN size 12)
@@ -176,7 +174,7 @@ it reads SIB20, within a second or two, and says so in its own log:
 ```
 [RLC]    0000: added PTM RLC entity of MRB 32 on LCID 32
 [PDCP]   0: added MRB 32 (SN size 12)
-[NR_RRC] MBS: broadcast session with service ID 202621 announced on G-RNTI fb30, MTCH on LCID 32
+[NR_RRC] MBS: broadcast session with service ID bed4da announced on G-RNTI fb30, MTCH on LCID 32
 ```
 
 Note the group address the core chose (`239.0.0.4` above) is not the one the
@@ -194,11 +192,11 @@ for n in 1 2 3; do
 done
 ```
 
-Send twenty packets from the core:
+Send twenty packets from the application server:
 
 ```bash
 for i in $(seq 20); do
-  docker exec mbs-cn sendip -p ipv4 -is 192.168.77.10 -id 239.0.0.25 239.0.0.25
+  docker exec mbs-as sendip -p ipv4 -is 192.168.77.20 -id 239.0.0.25 239.0.0.25
   sleep 0.2
 done
 ```
@@ -234,30 +232,27 @@ MBS broadcast session G-RNTI fb30: 20 PTM transmissions, 700 bytes, MCS 9
 
 ## Release the session
 
-The gNB releases a session when the core sends `BroadcastSessionReleaseRequest`:
-it leaves the group, removes the session from SIB20, and every UE stops
-receiving it the next time it reads SIB20.
-
-The 5G-MAG core does not send that message. It accepts the deletion of a
-session and keeps distributing it. To see the release anyway, start the gNB
-with its telnet server, by adding
-`--telnetsrv --telnetsrv.shrmod rrc --telnetsrv.listenaddr 192.168.77.101` to
-its options in the compose file, and ask it to release the session itself:
+Delete the session at the core:
 
 ```bash
-telnet 192.168.77.101 9090
-softmodem_gnb> rrc release_mbs_broadcast
+docker exec mbs-cn curl -s --http2-prior-knowledge -X DELETE \
+  127.0.0.4:7777/nmbsmf-mbssession/v1/mbs-sessions/1
 ```
 
-The gNB and the UEs say so:
+The core sends `BroadcastSessionReleaseRequest`. The gNB leaves the group and
+removes the session from SIB20, and every UE stops receiving it the next time
+it reads SIB20:
 
 ```
-[E1AP]   MBS: broadcast user plane released, TEID 0xeea0
-[NR_MAC] MBS: broadcast session for TMGI 200399000000 released, G-RNTI cd01
+[NGAP]   Broadcast Session Release initiating message
+[E1AP]   MBS: broadcast user plane released, TEID 0x2b17
+[NR_MAC] MBS: broadcast session for TMGI bed4da99f907 released, G-RNTI f738
 [NR_RRC] MBS: broadcast session with MTCH on LCID 32 not announced anymore
 ```
 
 A session created afterwards is announced and received like the first one.
+The gNB can also release a session without the core, through the telnet
+command `rrc release_mbs_broadcast`.
 
 ## Stop
 
