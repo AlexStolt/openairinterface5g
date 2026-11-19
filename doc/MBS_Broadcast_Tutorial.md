@@ -161,7 +161,7 @@ The gNB log now shows the session arriving and the group being created:
 [NGAP]   Broadcast session user plane: group 239.0.0.4 source 192.168.77.10 C-TEID 0x00002b17
 [NGAP]   Broadcast session setup acknowledged
 [E1AP]   MBS: broadcast bearer context for TMGI bed4da99f907, MRB 1, SST 1
-[GTPU]   MBS: joined group 239.0.0.4 on 192.168.77.101, port 2152
+[GTPU]   MBS: joined group 239.0.0.4 from 192.168.77.10 on 192.168.77.101, port 2152
 [GTPU]   MBS: listening for the broadcast session on TEID 0x2b17
 [RLC]    fb30: added PTM RLC entity of MRB 1 on LCID 32
 [NR_MAC] added MBS broadcast session G-RNTI fb30: LCID 32, HARQ feedback disabled, PTM HARQ processes 0xf000
