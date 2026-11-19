@@ -83,6 +83,10 @@ typedef struct {
   /* Active PDU sessions for PDU session status IE (TS 24.501 8.2.16.3 / 9.11.3.44) */
   uint8_t psi_status[MAX_NUM_PSI]; /* index 0 is spare */
   nas_ue_pdu_tun_t pdu_tun[MAX_NUM_PSI];
+  /* --mbs-join: the TMGI of the multicast MBS session this UE is to join, as 12 hex characters, or
+   * NULL. The join is sent once a PDU session it can ride on is up, and only once. */
+  const char *mbs_join_tmgi;
+  bool mbs_join_sent;
 } nr_ue_nas_t;
 
 nr_ue_nas_t *get_ue_nas_info(module_id_t module_id);
@@ -91,6 +95,9 @@ void generateServiceRequest(as_nas_info_t *initialNasMsg, nr_ue_nas_t *nas, bool
 void *nas_nrue_task(void *args_p);
 void *nas_nrue(void *args_p);
 void nas_init_nrue(int num_ues);
+/** @brief Ask UE \p ue_id to join the multicast MBS session of this TMGI (12 hex characters) once it
+ *  has a PDU session. NULL, the default, joins nothing. The string is not copied. */
+void nas_set_mbs_join(int ue_id, const char *tmgi);
 int nas_itti_kgnb_refresh_req(instance_t instance, const uint8_t kgnb[32]);
 void request_pdusession(nr_ue_nas_t *nas, const pdu_session_config_t *pdu);
 nr_ue_nas_t *get_nr_ue_nas_info(int ue_inst);

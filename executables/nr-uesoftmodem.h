@@ -35,6 +35,7 @@ extern uint16_t ue_id_g;
 #define  CONFIG_HLP_DISABLE_BLIND_SEARCH   "Disable blind search for UE searches by neighboring cells\n"
 #define  CONFIG_HLP_RX2TX                  "Defines ue capability in slots to produce an UL feedback from its relative DL meassage (DCI->ULSCH or PDSCH->PUCCH)"
 #define  CONFIG_HLP_SL_SYNCSOURCEUE        "Sidelink UE acts as SYNC REF UE"
+#define  CONFIG_HLP_MBS_JOIN               "Join a multicast MBS session once registered and the PDU session is up: its TMGI as 12 hex characters (3 octets of MBS Service ID then the PLMN), e.g. --mbs-join abcdef99f907\n"
 
 /***************************************************************************************************************************************/
 /* command line options definitions, CMDLINE_XXXX_DESC macros are used to initialize paramdef_t arrays which are then used as argument
@@ -89,6 +90,7 @@ extern uint16_t ue_id_g;
   {"ue-fd",                    "Frequency-domain I/O through the UE Low-PHY (executables/ue_fd)",  PARAMFLAG_BOOL,  .iptr=&nrUE_params.use_ue_fd, .defintval=0, TYPE_INT, 0}, \
   {"ue-fd-sync-timeout",       "FD-UE sync search timeout in ms (default 5000)", 0, .iptr=&nrUE_params.ue_fd_sync_timeout_ms, .defintval=5000, TYPE_INT, 0}, \
   {"sync-ref",                     CONFIG_HLP_SL_SYNCSOURCEUE, 0,               .uptr=&(nrUE_params.sync_ref),               .defuintval=0,     TYPE_UINT32,   0}, \
+  {"mbs-join",                     CONFIG_HLP_MBS_JOIN,        0,               .strptr=&nrUE_params.mbs_join_tmgi,          .defstrval=NULL,   TYPE_STRING,   0}, \
 }
 // clang-format on
 
@@ -135,6 +137,9 @@ typedef struct {
   int ue_capability_rx2tx;
   int use_ue_fd; // frequency-domain UE threads on the UE Low-PHY
   int ue_fd_sync_timeout_ms;  // sync search timeout of the UE Low-PHY
+  /* --mbs-join: the TMGI of a multicast MBS session to join, as 12 hex characters. NULL when the UE
+   * is not to join one, which is what makes a test able to decide which UE joins. */
+  char *mbs_join_tmgi;
   uint32_t sync_ref;
 } nrUE_params_t;
 extern uint64_t get_nrUE_optmask(void);

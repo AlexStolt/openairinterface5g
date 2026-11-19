@@ -275,6 +275,11 @@ int main(int argc, char **argv)
 
   nr_pdcp_layer_init();
   nas_init_nrue(NB_UE_INST);
+  /* --mbs-join names a multicast MBS session every UE of this process joins once its PDU session is
+   * up. A test decides which UE joins by giving the option to that UE's process. */
+  if (nrUE_params.mbs_join_tmgi != NULL)
+    for (int i = 0; i < NB_UE_INST; i++)
+      nas_set_mbs_join(i, nrUE_params.mbs_join_tmgi);
 
   nrue_set_ru_params(uniqCfg);
   nrue_set_cell_params(uniqCfg);
