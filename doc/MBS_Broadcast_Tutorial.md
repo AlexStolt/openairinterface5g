@@ -94,8 +94,9 @@ by itself (`upf.mbs.multicast_router` in `core.yaml`); for that it needs the
 kernel's multicast routing to itself, so do not run a routing daemon such as
 `smcrouted` next to it.
 
-Package the result however you like and point the compose file at it with
-`CN_IMG`. What the compose file expects of that image:
+Package the result however you like. The compose file expects the image as
+`open5gs_core:mbs`; to use another name, set `CN_IMG`. What it expects of
+that image:
 
 * the core reachable at `192.168.77.10`, with the AMF listening for NGAP and
   the SMF's service-based interface on `127.0.0.4:7777`;
