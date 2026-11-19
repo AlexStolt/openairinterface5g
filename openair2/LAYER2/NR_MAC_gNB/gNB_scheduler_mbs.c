@@ -701,6 +701,14 @@ static void nr_schedule_mbs_group(gNB_MAC_INST *mac, nr_cell_sched_t *cell, post
                           pdu_index,
                           n_members > 0 ? members[0] : NULL);
   fill_dl_tx_request(pp_pdsch, buf, pdu_index, sched_pdsch.tb_size, frame, slot);
+  T(T_GNB_MAC_DL_PDU_WITH_DATA,
+    T_INT(mac->Mod_id),
+    T_INT(0),
+    T_INT(group->g_rnti),
+    T_INT(frame),
+    T_INT(slot),
+    T_INT(pid),
+    T_BUFFER(buf, sched_pdsch.tb_size));
   group->ptm_tx++;
   group->ptm_sdu_bytes += sdu_bytes;
   for (int m = 0; m < n_members; m++) {
