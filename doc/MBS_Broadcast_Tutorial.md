@@ -165,7 +165,7 @@ The gNB log now shows the session arriving and the group being created:
 [GTPU]   MBS: joined group 239.0.0.4 from 192.168.77.10 on 192.168.77.101, port 2152
 [GTPU]   MBS: listening for the broadcast session on TEID 0x2b17
 [RLC]    fb30: added PTM RLC entity of MRB 1 on LCID 32
-[NR_MAC] added MBS broadcast session G-RNTI fb30: LCID 32, HARQ feedback disabled, PTM HARQ processes 0xf000
+[NR_MAC] added MBS broadcast session G-RNTI fb30: LCID 32, HARQ feedback disabled, PTM HARQ processes 0xf000, DCI 4_1
 [PDCP]   10000fb30: added MRB 1 (SN size 12)
 ```
 
@@ -228,7 +228,7 @@ The gNB counts what it sent in its periodic statistics, and does so with no
 UE in the cell as well:
 
 ```
-MBS broadcast session G-RNTI fb30: 20 PTM transmissions, 700 bytes, MCS 9
+MBS broadcast session G-RNTI fb30: 20 PTM transmissions, 460 bytes, MCS 9
 ```
 
 ## Release the session
