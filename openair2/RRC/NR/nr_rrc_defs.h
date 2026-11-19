@@ -96,6 +96,13 @@ typedef struct pdu_session_param_s {
   pdu_session_status_t status;
   uint8_t xid; // transaction_id
   ngap_cause_t cause;
+  /* The multicast MBS sessions this PDU session is associated with, i.e. the ones the UE has joined
+   * through it (TS 23.247 V18.8.0 clause 7.2.1.3 step 6: "the NG-RAN uses the MBS Session ID to
+   * determine that the PDU Session identified by the PDU Session ID is associated with the indicated
+   * multicast MBS session"). This is the CU-side membership the radio configuration will read to know
+   * which UE needs which multicast MRB. */
+  uint8_t nb_mbs_sessions;
+  mbs_session_id_t mbs_sessions[MAX_MBS_SESSIONS];
 } rrc_pdu_session_param_t;
 
 typedef struct drb_s {

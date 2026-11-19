@@ -1262,6 +1262,117 @@ static void clear_ue_ngap_modify_qos_pending(gNB_RRC_UE_t *UE)
   }
 }
 
+/* True when every item of this request only associates the PDU session with multicast MBS sessions:
+ * no QoS flow is added, modified or released. That is what a UE's MBS join looks like on N2
+ * (TS 23.247 V18.8.0 clause 7.2.1.3 step 5), and it needs neither an E1 bearer modification nor an
+ * RRC reconfiguration -- so it cannot go through the ordinary modification path, which answers the
+ * AMF only once a reconfiguration it never starts has completed. */
+static bool is_mbs_only_modification(const ngap_pdusession_modify_req_t *req)
+{
+  if (req->nb_pdusessions_tomodify == 0)
+    return false;
+
+  for (int i = 0; i < req->nb_pdusessions_tomodify; i++) {
+    const pdusession_mod_req_transfer_t *t = &req->pdusession[i].pdusessionTransfer;
+    if (t->nb_mbs_to_setup_modify == 0)
+      return false;
+    if (t->nb_qos_to_add_modify > 0 || t->nb_qos_to_release > 0)
+      return false;
+  }
+  return true;
+}
+
+static void tmgi_hex_string(const uint8_t *tmgi, char *out, size_t out_size)
+{
+  for (int i = 0; i < 6 && (size_t)(2 * i + 3) <= out_size; i++)
+    snprintf(out + 2 * i, 3, "%02x", tmgi[i]);
+}
+
+/* A UE joining one or more multicast MBS sessions through an existing PDU session.
+ *
+ * The gNB's part of it, per TS 23.247 V18.8.0 clause 7.2.1.3 step 6, is to "use the MBS Session ID to
+ * determine that the PDU Session identified by the PDU Session ID is associated with the indicated
+ * multicast MBS session" -- i.e. to remember the membership. That is what this does, in the CU's own
+ * UE context, so the radio configuration can read it.
+ *
+ * Steps 7 and 7a -- the shared NG-U tunnel (Distribution Setup) and the radio resources for the
+ * session -- are not built yet; see the delivery's OPEN_ISSUES.md. The N1 container that came with
+ * the request still reaches the UE, by DL information transfer rather than as part of a
+ * reconfiguration, because there is no reconfiguration to attach it to.
+ */
+static int rrc_gNB_process_mbs_join(gNB_RRC_INST *rrc, gNB_RRC_UE_t *UE, const ngap_pdusession_modify_req_t *req)
+{
+  uint8_t xid = rrc_gNB_get_next_transaction_identifier(rrc->module_id);
+  bool any = false;
+
+  for (int i = 0; i < req->nb_pdusessions_tomodify; i++) {
+    const pdusession_resource_mod_item_t *sessMod = &req->pdusession[i];
+    const pdusession_mod_req_transfer_t *t = &sessMod->pdusessionTransfer;
+    rrc_pdu_session_param_t *session = find_pduSession(&UE->pduSessions, sessMod->pdusession_id);
+
+    if (!session) {
+      /* 8.2.3.4 3GPP TS 38.413: an unrecognized PDU Session ID is reported as failed. */
+      LOG_W(NR_RRC, "UE %d: MBS join for unknown PDU session %d\n", UE->rrc_ue_id, sessMod->pdusession_id);
+      ngap_cause_t cause = {.type = NGAP_CAUSE_RADIO_NETWORK, .value = NGAP_CAUSE_RADIO_NETWORK_UNKNOWN_PDU_SESSION_ID};
+      pdusession_t p = {.pdusession_id = sessMod->pdusession_id};
+      rrc_pdu_session_param_t *added = add_pduSession(&UE->pduSessions, &p);
+      added->status = PDU_SESSION_STATUS_FAILED;
+      added->cause = cause;
+      added->xid = xid;
+      continue;
+    }
+
+    for (int m = 0; m < t->nb_mbs_to_setup_modify; m++) {
+      char hex[2 * 6 + 1] = {0};
+      bool already = false;
+
+      tmgi_hex_string(t->mbs_to_setup_modify[m].tmgi, hex, sizeof(hex));
+
+      for (int k = 0; k < session->nb_mbs_sessions; k++) {
+        if (memcmp(session->mbs_sessions[k].tmgi, t->mbs_to_setup_modify[m].tmgi, 6) == 0) {
+          already = true;
+          break;
+        }
+      }
+      if (already) {
+        LOG_I(NR_RRC, "UE %d: PDU session %d is already associated with MBS session %s\n",
+              UE->rrc_ue_id, sessMod->pdusession_id, hex);
+        continue;
+      }
+      if (session->nb_mbs_sessions >= MAX_MBS_SESSIONS) {
+        LOG_E(NR_RRC, "UE %d: PDU session %d cannot hold more than %d MBS sessions\n",
+              UE->rrc_ue_id, sessMod->pdusession_id, MAX_MBS_SESSIONS);
+        break;
+      }
+      session->mbs_sessions[session->nb_mbs_sessions++] = t->mbs_to_setup_modify[m];
+      LOG_I(NR_RRC, "UE %d: PDU session %d joined MBS session %s\n",
+            UE->rrc_ue_id, sessMod->pdusession_id, hex);
+    }
+
+    session->status = PDU_SESSION_STATUS_TOMODIFY;
+    session->xid = xid;
+    session->cause.type = NGAP_CAUSE_NOTHING;
+    any = true;
+
+    /* The N1 SM container of step 5, the PDU Session Modification Command the SMF built. Clause
+     * 7.2.1.3 step 8 has it reach the UE "as part of the AN specific signalling exchange"; with no
+     * radio to reconfigure, a DL information transfer is that exchange. */
+    if (sessMod->nas_pdu.len > 0) {
+      free_byte_array(UE->nas_pdu);
+      UE->nas_pdu = copy_byte_array(sessMod->nas_pdu);
+      rrc_forward_ue_nas_message(rrc, UE);
+    }
+  }
+
+  if (!any)
+    LOG_W(NR_RRC, "UE %d: MBS join matched no PDU session\n", UE->rrc_ue_id);
+
+  /* Step 9: the gNB sends the PDU session modification response. Immediately -- there is nothing to
+   * wait for. */
+  rrc_gNB_send_NGAP_PDUSESSION_MODIFY_RESP(rrc, UE, xid);
+  return 0;
+}
+
 int rrc_gNB_process_NGAP_PDUSESSION_MODIFY_REQ(const ngap_pdusession_modify_req_t *req, instance_t instance)
 {
   gNB_RRC_INST *rrc = RC.nrrrc[instance];
@@ -1284,6 +1395,9 @@ int rrc_gNB_process_NGAP_PDUSESSION_MODIFY_REQ(const ngap_pdusession_modify_req_
     rrc_gNB_ngap_pdusession_mod_failure(rrc->module_id, req, cause);
     return -1;
   }
+
+  if (is_mbs_only_modification(req))
+    return rrc_gNB_process_mbs_join(rrc, UE, req);
 
   clear_ue_ngap_modify_qos_pending(UE);
 
@@ -1390,6 +1504,14 @@ int rrc_gNB_send_NGAP_PDUSESSION_MODIFY_RESP(gNB_RRC_INST *rrc, gNB_RRC_UE_t *UE
               UE->rrc_ue_id,
               session->param.pdusession_id);
       }
+      /* MBSSessionSetuporModifyResponseList: the multicast MBS sessions this PDU session is
+       * associated with. Reported in full rather than only the ones added by this request --
+       * TS 38.413 V17.10.0 clause 8.2.3.2 has the response say which MBS sessions the PDU session
+       * now has, which for a repeated join is the same list. */
+      DevAssert(session->nb_mbs_sessions <= MAX_MBS_SESSIONS);
+      p->nb_mbs_setup_modify = session->nb_mbs_sessions;
+      for (int m = 0; m < session->nb_mbs_sessions; m++)
+        p->mbs_setup_modify[m] = session->mbs_sessions[m];
     } else if (session->status == PDU_SESSION_STATUS_FAILED) {
       DevAssert(resp->nb_of_pdusessions_failed <= NR_MAX_NB_PDU_SESSIONS);
       pdusession_failed_t *failed = &resp->pdusessions_failed[resp->nb_of_pdusessions_failed++];
