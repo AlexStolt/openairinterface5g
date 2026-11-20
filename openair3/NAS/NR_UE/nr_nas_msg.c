@@ -814,9 +814,6 @@ static void derive_ue_keys(uint8_t *buf, nr_ue_nas_t *nas)
   printf("\n");
 }
 
-/* Defined further down, next to the join itself; used as soon as a PDU session comes up. */
-static void nr_nas_mbs_join_if_requested(nr_ue_nas_t *nas, uint8_t pdu_session_id);
-
 nr_ue_nas_t *get_ue_nas_info(module_id_t module_id)
 {
   AssertFatal(module_id < MAX_NUM_NR_UE_INST, "Invalid module_id %d\n", module_id);
@@ -1874,8 +1871,6 @@ static void handle_pdu_session_accept(nr_ue_nas_t *nas, uint8_t *pdu_buffer, uin
   /* Track active PDU session for later PDU session status IE (24.501 8.2.16.3) */
   nas->psi_status[sm_header.pdu_session_id] = PDU_SESSION_ACTIVE;
 
-  /* With a PDU session up, the UE can ask to join a multicast MBS session over it. */
-  nr_nas_mbs_join_if_requested(nas, sm_header.pdu_session_id);
   // ask RRC to start connected reader for this PSI
   if (t->sock > 0)
     send_nas_tun_req(nas, sm_header.pdu_session_id);
@@ -1987,7 +1982,11 @@ static void generatePduSessionModificationComplete(nr_ue_nas_t *nas,
  * The wrapping into a security-protected UL NAS TRANSPORT is the same as
  * generatePduSessionModificationComplete() above; only the 5GSM payload differs.
  */
-static void generateMbsJoinRequest(nr_ue_nas_t *nas, as_nas_info_t *responseMsg, uint8_t pdu_session_id, const uint8_t *tmgi)
+static void generateMbsRequest(nr_ue_nas_t *nas,
+                               as_nas_info_t *responseMsg,
+                               uint8_t pdu_session_id,
+                               const uint8_t *tmgi,
+                               mbs_operation_t operation)
 {
   int size = 0;
 
@@ -2000,13 +1999,13 @@ static void generateMbsJoinRequest(nr_ue_nas_t *nas, as_nas_info_t *responseMsg,
   req.pdusessionmodificationrequestmsgtype = FGS_PDU_SESSION_MODIFICATION_REQ;
   req.requested_mbs_present = true;
   req.num_requested_mbs = 1;
-  req.requested_mbs[0].operation = MBS_OP_JOIN;
+  req.requested_mbs[0].operation = operation;
   memcpy(req.requested_mbs[0].tmgi, tmgi, MBS_TMGI_LEN);
 
   uint8_t req_buffer[4 + 3 + MBS_MAX_SESSIONS * (1 + MBS_TMGI_LEN)];
   int req_length = encode_pdu_session_modification_request(&req, req_buffer, sizeof(req_buffer));
   if (req_length < 0) {
-    LOG_E(NAS, "Could not encode the PDU Session Modification Request of the MBS join\n");
+    LOG_E(NAS, "Could not encode the PDU Session Modification Request of the MBS join or leave\n");
     return;
   }
 
@@ -2067,43 +2066,34 @@ static void generateMbsJoinRequest(nr_ue_nas_t *nas, as_nas_info_t *responseMsg,
 }
 
 /**
- * @brief Send the MBS join of --mbs-join, once a PDU session it can ride on is up.
+ * @brief Ask to join or leave a multicast MBS session, over an active PDU session.
  *
- * Called when a PDU session becomes active. The join waits for that on purpose: clause 7.2.1.3 step 1
- * needs "an existing PDU session that can be used to send the UE join request", and a UE that has
- * only just registered has none.
+ * Triggered at runtime (telnet `ciUE mbs_join` / `mbs_leave`), so a test decides which UE joins and
+ * when. Clause 7.2.1.3 step 1 needs "an existing PDU session that can be used to send the UE join
+ * request": the first active one is used.
  */
-static void nr_nas_mbs_join_if_requested(nr_ue_nas_t *nas, uint8_t pdu_session_id)
+int nas_mbs_request(int ue_id, const char *tmgi_hex, bool join)
 {
+  nr_ue_nas_t *nas = get_ue_nas_info(ue_id);
   uint8_t tmgi[MBS_TMGI_LEN];
+  if (!mbs_tmgi_from_string(tmgi_hex, tmgi))
+    return -1;
+  if (nas->security_container == NULL)
+    return -2;
+  int psi = 0;
+  for (int i = 1; i < MAX_NUM_PSI && psi == 0; i++)
+    if (nas->psi_status[i] == PDU_SESSION_ACTIVE)
+      psi = i;
+  if (psi == 0)
+    return -3;
 
-  if (nas->mbs_join_tmgi == NULL || nas->mbs_join_sent)
-    return;
-
-  if (!mbs_tmgi_from_string(nas->mbs_join_tmgi, tmgi)) {
-    LOG_E(NAS, "--mbs-join %s is not 12 hex characters, no MBS join is sent\n", nas->mbs_join_tmgi);
-    nas->mbs_join_sent = true; /* complaining once is enough */
-    return;
-  }
-
-  if (nas->security_container == NULL) {
-    LOG_E(NAS, "No NAS security context, cannot send the MBS join\n");
-    return;
-  }
-
-  as_nas_info_t join_msg = {0};
-  generateMbsJoinRequest(nas, &join_msg, pdu_session_id, tmgi);
-  if (join_msg.length == 0) {
-    LOG_E(NAS, "Could not build the MBS join request\n");
-    return;
-  }
-
-  send_nas_uplink_data_req(nas, &join_msg);
-  nas->mbs_join_sent = true;
-  LOG_A(NAS,
-        "MBS: asked to join multicast session TMGI %s on PDU session %d\n",
-        nas->mbs_join_tmgi,
-        pdu_session_id);
+  as_nas_info_t msg = {0};
+  generateMbsRequest(nas, &msg, psi, tmgi, join ? MBS_OP_JOIN : MBS_OP_LEAVE);
+  if (msg.length == 0)
+    return -4;
+  send_nas_uplink_data_req(nas, &msg);
+  LOG_A(NAS, "MBS: asked to %s multicast session TMGI %s on PDU session %d\n", join ? "join" : "leave", tmgi_hex, psi);
+  return 0;
 }
 
 /**
@@ -3146,8 +3136,3 @@ void nas_init_nrue(int num_ues) {
   }
 }
 
-void nas_set_mbs_join(int ue_id, const char *tmgi)
-{
-  nr_ue_nas_t *nas = get_ue_nas_info(ue_id);
-  nas->mbs_join_tmgi = tmgi;
-}
