@@ -1085,8 +1085,9 @@ void nr_pdcp_reestablishment(ue_id_t ue_id,
  * DRB 1 because that is the only one a UE has in these testbeds; a session
  * mapped onto the right bearer is work for when there can be more than one.
  */
-/* The MBS session's PDCP context, as created when the broadcast context
- * reaches the DU. One session, so one of each.
+/* The PDCP context of each broadcast session, by its MRB, as created when the
+ * broadcast context reaches the DU. The tunnel of the session carries the MRB
+ * with its TEID, so the payload finds its own session's context.
  *
  * It lives here because the two ends of the session sit in different places:
  * the G-RNTI -- and with it the PDCP context id, NR_PDCP_MBS_CONTEXT_ID() --
@@ -1096,15 +1097,34 @@ void nr_pdcp_reestablishment(ue_id_t ue_id,
  * back in the F1AP Multicast Context Setup Response and the CU-UP carry it in
  * the E1 bearer context. Neither exists yet, which is the same gap that stops
  * the MRB's PDUs reaching the DU at all -- see nr_rlc_mrb_recv_sdu(). */
-static ue_id_t mbs_pdcp_context;
-static int mbs_pdcp_mrb_id;
+#define NR_PDCP_MBS_MAX_BROADCAST 8
+static struct {
+  int mrb_id;
+  ue_id_t context;
+} mbs_bc_contexts[NR_PDCP_MBS_MAX_BROADCAST];
+static pthread_mutex_t mbs_bc_lock = PTHREAD_MUTEX_INITIALIZER;
 
+/* context_id 0 removes the MRB's context */
 void nr_pdcp_mbs_set_context(ue_id_t context_id, int mrb_id)
 {
-  mbs_pdcp_context = context_id;
-  mbs_pdcp_mrb_id = mrb_id;
-  if (context_id != 0)
-    LOG_I(PDCP, "MBS: broadcast payload will go to PDCP context %lu, MRB %d\n", context_id, mrb_id);
+  pthread_mutex_lock(&mbs_bc_lock);
+  int i = 0;
+  while (i < NR_PDCP_MBS_MAX_BROADCAST && mbs_bc_contexts[i].mrb_id != mrb_id)
+    i++;
+  if (i == NR_PDCP_MBS_MAX_BROADCAST) {
+    i = 0;
+    while (i < NR_PDCP_MBS_MAX_BROADCAST && mbs_bc_contexts[i].context != 0)
+      i++;
+  }
+  if (i < NR_PDCP_MBS_MAX_BROADCAST) {
+    mbs_bc_contexts[i].mrb_id = context_id ? mrb_id : 0;
+    mbs_bc_contexts[i].context = context_id;
+  }
+  pthread_mutex_unlock(&mbs_bc_lock);
+  if (i == NR_PDCP_MBS_MAX_BROADCAST)
+    LOG_E(PDCP, "MBS: more than %d broadcast sessions, MRB %d gets no payload\n", NR_PDCP_MBS_MAX_BROADCAST, mrb_id);
+  else if (context_id != 0)
+    LOG_I(PDCP, "MBS: broadcast payload of MRB %d will go to PDCP context %lu\n", mrb_id, context_id);
 }
 
 /* Hand a broadcast session's payload to its MRB.
@@ -1126,11 +1146,19 @@ bool nr_pdcp_mbs_broadcast_deliver(protocol_ctxt_t *ctxt_pP,
                                    const bool rqi,
                                    const int pdusession_id)
 {
-  if (mbs_pdcp_context == 0) {
-    LOG_D(PDCP, "MBS: broadcast payload with no MRB to put it on yet\n");
+  /* the MRB of the session, registered with the TEID of its tunnel */
+  const int mrb_id = pdusession_id;
+  ue_id_t context = 0;
+  pthread_mutex_lock(&mbs_bc_lock);
+  for (int i = 0; i < NR_PDCP_MBS_MAX_BROADCAST && context == 0; i++)
+    if (mbs_bc_contexts[i].context != 0 && mbs_bc_contexts[i].mrb_id == mrb_id)
+      context = mbs_bc_contexts[i].context;
+  pthread_mutex_unlock(&mbs_bc_lock);
+  if (context == 0) {
+    LOG_D(PDCP, "MBS: broadcast payload for MRB %d with no PDCP context to put it on yet\n", mrb_id);
     return false;
   }
-  return nr_pdcp_mrb_data_req(mbs_pdcp_context, mbs_pdcp_mrb_id, sdu_buffer, sdu_buffer_size);
+  return nr_pdcp_mrb_data_req(context, mrb_id, sdu_buffer, sdu_buffer_size);
 }
 
 bool nr_pdcp_data_req_drb(protocol_ctxt_t *ctxt_pP,

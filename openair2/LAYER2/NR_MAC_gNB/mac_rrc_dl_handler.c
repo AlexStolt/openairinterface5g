@@ -1412,6 +1412,20 @@ void positioning_measurement_request(const f1ap_positioning_measurement_req_t *r
   NR_SCHED_UNLOCK(&mac->sched_lock);
 }
 
+/* The LCID of a new MBS group's MTCH: one no other group of the cell uses, from 32 down. The UE keeps one RLC entity
+ * per LCID for all its MBS sessions, so two sessions on one LCID would be mixed up there. 0 if none is left. */
+static logical_chan_id_t mbs_free_lcid(const gNB_MAC_INST *mac, const nr_cell_sched_t *cell)
+{
+  for (logical_chan_id_t lcid = 32; lcid >= 4; lcid--) {
+    bool used = false;
+    for (nr_mbs_group_t *const *g = mac->UE_info.mbs_group_list; *g != NULL && !used; g++)
+      used = (*g)->cell == cell && (*g)->config.lcid == lcid;
+    if (!used)
+      return lcid;
+  }
+  return 0;
+}
+
 /* Broadcast Context Setup, at the DU.
  *
  * The session the core created has reached the component that puts it on the
@@ -1434,10 +1448,9 @@ void broadcast_context_setup(const f1ap_broadcast_ctx_setup_t *req)
   nr_mbs_group_config_t config = {
       .config_id = 0,
       .mrb_id = req->mrb_id,
-      /* LCID 32 is the MTCH, and four HARQ processes reserved for PTM --
-       * the values his test adapter used. They belong in the F1AP message
-       * once TS 38.473 carries them. */
-      .lcid = 32,
+      /* an MTCH LCID of its own, and four HARQ processes reserved for PTM.
+       * They belong in the F1AP message once TS 38.473 carries them. */
+      .lcid = mbs_free_lcid(mac, cell),
       .harq_feedback = NR_MBS_HARQ_FEEDBACK_DISABLED,
       .num_harq = 4,
       .broadcast = true,
@@ -1446,7 +1459,7 @@ void broadcast_context_setup(const f1ap_broadcast_ctx_setup_t *req)
       .mcs = cell->mbs_broadcast_mcs,
   };
   memcpy(config.tmgi, req->tmgi, sizeof(config.tmgi));
-  const nr_mbs_group_t *group = nr_mac_add_mbs_group(mac, cell, &config);
+  const nr_mbs_group_t *group = config.lcid ? nr_mac_add_mbs_group(mac, cell, &config) : NULL;
   /* Announce it: from here on any UE that reads SIB20 can receive the
    * session, connected or not, and the gNB does not know which ones do. */
   const bool announced = group != NULL && nr_mac_update_sib20(cell);
@@ -1491,13 +1504,14 @@ void broadcast_context_release(const f1ap_broadcast_ctx_release_t *req)
     return;
   }
   const rnti_t g_rnti = group->g_rnti;
+  const int mrb_id = group->config.mrb_id;
   nr_cell_sched_t *cell = group->cell;
   nr_mac_release_mbs_group(mac, g_rnti);
   nr_mac_update_sib20(cell);
   NR_SCHED_UNLOCK(&mac->sched_lock);
 
   /* the MRB was created here, so it goes here too */
-  nr_pdcp_mbs_set_context(0, 0);
+  nr_pdcp_mbs_set_context(0, mrb_id);
   nr_pdcp_remove_UE(NR_PDCP_MBS_CONTEXT_ID(g_rnti));
   LOG_A(NR_MAC,
         "MBS: broadcast session for TMGI %02x%02x%02x%02x%02x%02x released, G-RNTI %04x\n",
@@ -1540,14 +1554,14 @@ void multicast_ue_join(const f1ap_multicast_ue_join_t *req)
         /* one mbs-RNTI-SpecificConfig per multicast session a UE may hold */
         .config_id = num_multicast,
         .mrb_id = req->mrb_id,
-        /* the MTCH, and four PTM HARQ processes, as for broadcast */
-        .lcid = 32,
+        /* an MTCH LCID of its own, and four PTM HARQ processes, as for broadcast */
+        .lcid = mbs_free_lcid(mac, UE->pcell),
         .harq_feedback = NR_MBS_HARQ_FEEDBACK_ACK_NACK,
         .dci_4_2 = true,
         .num_harq = 4,
     };
     memcpy(config.tmgi, req->tmgi, sizeof(config.tmgi));
-    group = nr_mac_add_mbs_group(mac, UE->pcell, &config);
+    group = config.lcid ? nr_mac_add_mbs_group(mac, UE->pcell, &config) : NULL;
   }
   const bool joined = group != NULL && nr_mac_join_mbs_member(mac, group, UE);
   const rnti_t g_rnti = group ? group->g_rnti : 0;

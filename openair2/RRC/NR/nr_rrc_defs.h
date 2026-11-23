@@ -467,7 +467,7 @@ typedef struct cucp_cuup_if_s {
   cucp_cuup_bearer_context_setup_func_t bearer_context_setup;
   /* MBS broadcast: the session belongs to the cell, not to a UE */
   void (*bc_bearer_context_setup)(const struct e1ap_bc_bearer_setup_req_s *req);
-  void (*bc_bearer_context_release)(void);
+  void (*bc_bearer_context_release)(uint32_t gNB_cu_cp_mbs_e1ap_id);
   cucp_cuup_bearer_context_mod_func_t bearer_context_mod;
   cucp_cuup_bearer_context_mod_confirm_func_t bearer_context_mod_confirm;
   cucp_cuup_bearer_context_release_func_t bearer_context_release;

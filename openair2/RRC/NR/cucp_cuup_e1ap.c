@@ -39,8 +39,9 @@ static void cucp_cuup_bc_bearer_context_setup_e1ap(const e1ap_bc_bearer_setup_re
 /* BC Bearer Context Release (TS 37.483 §8.3.x) is not encoded yet, so a split
  * CU-UP is not told and keeps its tunnel. Nothing reaches the air through it:
  * the DU releases the session all the same. */
-static void cucp_cuup_bc_bearer_context_release_e1ap(void)
+static void cucp_cuup_bc_bearer_context_release_e1ap(uint32_t gNB_cu_cp_mbs_e1ap_id)
 {
+  (void)gNB_cu_cp_mbs_e1ap_id;
   LOG_E(E1AP, "MBS: release of a broadcast bearer context is not supported over E1 yet, the CU-UP keeps its tunnel\n");
 }
 

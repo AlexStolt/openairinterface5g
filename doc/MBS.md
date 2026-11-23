@@ -172,8 +172,8 @@ use `MBS_TEST` or redirect a UE's unicast traffic.
 Broadcast MRB creation at the gNB still uses fixed PDCP parameters in
 `broadcast_context_setup()` at the DU. E1AP/F1AP setup signalling exists, but
 MRB data cannot cross a CU/DU split: `deliver_pdu_mrb_gnb()` still delivers
-locally to RLC. The broadcast session-to-PDCP mapping is also limited to one
-session. See the [broadcast tutorial's gaps](MBS_Broadcast_Tutorial.md#known-gaps)
+locally to RLC. Several broadcast sessions can run at once, each with its own
+tunnel, MRB, G-RNTI and MTCH LCID; the UE tells them apart by their LCID. See the [broadcast tutorial's gaps](MBS_Broadcast_Tutorial.md#known-gaps)
 for the MCCH, DCI and UE-interface limitations.
 
 The call graphs below show implemented multicast functions. Their TODO lists
