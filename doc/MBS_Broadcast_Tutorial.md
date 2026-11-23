@@ -2,6 +2,11 @@
 
 # MBS broadcast tutorial
 
+> This work is part of the ESA activity **AD-SAT** (*Provision of Broadband
+> Control Centre Services for Autonomous Driving over Satellite
+> Constellations*, activity 3F.049) with Frequentis AG. See the
+> [project page](https://connectivity.esa.int/?p=26285).
+
 One gNB sends a single transmission on a G-RNTI and three UEs receive it.
 Unlike [MBS.md](./MBS.md), which drives the group from a test adapter, here
 the session comes from the core: the MB-SMF creates a broadcast session, the
