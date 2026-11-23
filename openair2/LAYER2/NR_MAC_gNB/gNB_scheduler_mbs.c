@@ -263,6 +263,39 @@ bool nr_mac_add_mbs_member(gNB_MAC_INST *mac, nr_mbs_group_t *group, NR_UE_info_
   return true;
 }
 
+/** @brief A UE asks to join a group: added now, or as soon as a reconfiguration of the UE that is ongoing is over
+ * (nr_mac_add_mbs_member() starts a reconfiguration of its own). Must be called with the scheduler lock held.
+ * @return false if the UE cannot join the group at all */
+bool nr_mac_join_mbs_member(gNB_MAC_INST *mac, nr_mbs_group_t *group, NR_UE_info_t *UE)
+{
+  if (UE->reconfigCellGroup || UE->cm_info.trigger_info != NO_TRIGGER) {
+    for (int i = 0; i < group->num_pending; i++)
+      if (group->pending[i] == UE->rnti)
+        return true;
+    DevAssert(group->num_pending < MAX_MOBILES_PER_GNB);
+    group->pending[group->num_pending++] = UE->rnti;
+    LOG_I(NR_MAC, "UE %04x joins MBS group G-RNTI %04x once its ongoing reconfiguration is over\n", UE->rnti, group->g_rnti);
+    return true;
+  }
+  return nr_mac_add_mbs_member(mac, group, UE);
+}
+
+/* the joins that had to wait for a reconfiguration of the UE */
+static void add_pending_members(gNB_MAC_INST *mac, nr_mbs_group_t *group)
+{
+  int i = 0;
+  while (i < group->num_pending) {
+    NR_UE_info_t *UE = find_connected_nr_ue(&mac->UE_info, group->pending[i]);
+    if (UE && (UE->reconfigCellGroup || UE->cm_info.trigger_info != NO_TRIGGER)) {
+      i++;
+      continue;
+    }
+    if (UE)
+      nr_mac_add_mbs_member(mac, group, UE);
+    group->pending[i] = group->pending[--group->num_pending];
+  }
+}
+
 /** @brief Stops PTM transmissions of a group towards a UE, and gives the reserved HARQ processes back to unicast.
  * Must be called with the scheduler lock held. */
 void nr_mac_remove_mbs_member(gNB_MAC_INST *mac, nr_mbs_group_t *group, NR_UE_info_t *UE)
@@ -780,7 +813,10 @@ void nr_schedule_mbs(gNB_MAC_INST *mac, nr_cell_sched_t *cell, post_process_pdsc
   if (!is_dl_slot(pp_pdsch->slot, &cell->frame_structure))
     return;
   for (nr_mbs_group_t **g = mac->UE_info.mbs_group_list; *g; g++) {
-    if ((*g)->cell == cell)
-      nr_schedule_mbs_group(mac, cell, pp_pdsch, *g);
+    if ((*g)->cell != cell)
+      continue;
+    if ((*g)->num_pending > 0)
+      add_pending_members(mac, *g);
+    nr_schedule_mbs_group(mac, cell, pp_pdsch, *g);
   }
 }

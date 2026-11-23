@@ -980,6 +980,9 @@ typedef struct nr_mbs_group {
   /// C-RNTIs of the UEs that receive the session
   int num_members;
   rnti_t member[MAX_MOBILES_PER_GNB];
+  /// C-RNTIs of UEs that joined while another reconfiguration of theirs was ongoing, added when it is over
+  int num_pending;
+  rnti_t pending[MAX_MOBILES_PER_GNB];
   /// DL HARQ processes reserved for PTM, also set in ptm_dl_harq_mask of every member
   uint32_t harq_mask;
   nr_mbs_harq_t harq[NR_MAX_HARQ_PROCESSES];

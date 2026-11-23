@@ -445,6 +445,7 @@ typedef struct nr_mac_rrc_dl_if_s {
   f1_setup_response_func_t f1_setup_response;
   broadcast_context_setup_func_t broadcast_context_setup;
   broadcast_context_release_func_t broadcast_context_release;
+  multicast_ue_join_func_t multicast_ue_join;
   f1_setup_failure_func_t f1_setup_failure;
   gnb_du_configuration_update_ack_func_t gnb_du_configuration_update_acknowledge;
   ue_context_setup_request_func_t ue_context_setup_request;

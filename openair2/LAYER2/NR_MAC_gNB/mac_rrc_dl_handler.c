@@ -1504,3 +1504,67 @@ void broadcast_context_release(const f1ap_broadcast_ctx_release_t *req)
         req->tmgi[0], req->tmgi[1], req->tmgi[2], req->tmgi[3], req->tmgi[4], req->tmgi[5],
         g_rnti);
 }
+
+/* A UE joins a multicast session, at the DU (TS 38.473: Multicast Context
+ * Setup of the session, then the UE's Multicast MBS Session list).
+ *
+ * The session's group is created with its first member: unlike broadcast it
+ * is only transmitted towards UEs that joined, so it needs no announcement and
+ * nothing to do before the first one. Members report ACK/NACK, a NACK being
+ * retransmitted point-to-point, and the PTM transmissions use DCI 4_2. Adding
+ * the member configures the G-RNTI and the PTM RLC entity in the UE's
+ * CellGroupConfig, which reaches the UE in an RRCReconfiguration. */
+void multicast_ue_join(const f1ap_multicast_ue_join_t *req)
+{
+  DevAssert(req != NULL);
+  gNB_MAC_INST *mac = RC.nrmac[0];
+  NR_SCHED_LOCK(&mac->sched_lock);
+  NR_UE_info_t *UE = find_connected_nr_ue(&mac->UE_info, req->gNB_DU_ue_id);
+  if (UE == NULL) {
+    NR_SCHED_UNLOCK(&mac->sched_lock);
+    LOG_E(NR_MAC, "MBS: multicast join of unknown UE %04x\n", req->gNB_DU_ue_id);
+    return;
+  }
+  nr_mbs_group_t *group = NULL;
+  int num_multicast = 0;
+  for (nr_mbs_group_t *const *g = mac->UE_info.mbs_group_list; *g != NULL; g++) {
+    if ((*g)->config.broadcast)
+      continue;
+    num_multicast++;
+    if ((*g)->cell == UE->pcell && memcmp((*g)->config.tmgi, req->tmgi, sizeof(req->tmgi)) == 0)
+      group = *g;
+  }
+  const bool created = group == NULL;
+  if (created) {
+    nr_mbs_group_config_t config = {
+        /* one mbs-RNTI-SpecificConfig per multicast session a UE may hold */
+        .config_id = num_multicast,
+        .mrb_id = req->mrb_id,
+        /* the MTCH, and four PTM HARQ processes, as for broadcast */
+        .lcid = 32,
+        .harq_feedback = NR_MBS_HARQ_FEEDBACK_ACK_NACK,
+        .dci_4_2 = true,
+        .num_harq = 4,
+    };
+    memcpy(config.tmgi, req->tmgi, sizeof(config.tmgi));
+    group = nr_mac_add_mbs_group(mac, UE->pcell, &config);
+  }
+  const bool joined = group != NULL && nr_mac_join_mbs_member(mac, group, UE);
+  const rnti_t g_rnti = group ? group->g_rnti : 0;
+  NR_SCHED_UNLOCK(&mac->sched_lock);
+  if (group == NULL) {
+    LOG_E(NR_MAC, "MBS: could not create the multicast group for MRB %ld\n", req->mrb_id);
+    return;
+  }
+  if (created) {
+    LOG_A(NR_MAC,
+          "MBS: multicast group for TMGI %02x%02x%02x%02x%02x%02x on G-RNTI %04x, MRB %ld\n",
+          req->tmgi[0], req->tmgi[1], req->tmgi[2], req->tmgi[3], req->tmgi[4], req->tmgi[5],
+          g_rnti, req->mrb_id);
+    /* The session's MRB. As for broadcast, it lands here because its PDCP
+     * context is derived from the G-RNTI the MAC just allocated. */
+    nr_pdcp_add_mrb(true, NR_PDCP_MBS_CONTEXT_ID(g_rnti), req->mrb_id, 0, NR_MBS_TEST_PDCP_SN_SIZE, NR_MBS_TEST_PDCP_T_REORDERING);
+  }
+  if (!joined)
+    LOG_E(NR_MAC, "MBS: UE %04x cannot join the multicast group G-RNTI %04x\n", req->gNB_DU_ue_id, g_rnti);
+}

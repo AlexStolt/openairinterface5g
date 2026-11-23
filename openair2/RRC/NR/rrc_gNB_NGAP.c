@@ -1288,6 +1288,36 @@ static void tmgi_hex_string(const uint8_t *tmgi, char *out, size_t out_size)
     snprintf(out + 2 * i, 3, "%02x", tmgi[i]);
 }
 
+/* The MRB-Identity of a multicast session, the same for all its members. MRB 1 is the broadcast session's, so
+ * multicast sessions take 2 and up, in the order the gNB first sees them. */
+static long mbs_multicast_mrb_id(const uint8_t *tmgi)
+{
+  static uint8_t known[MAX_MBS_SESSIONS][6];
+  static int num_known;
+  for (int i = 0; i < num_known; i++)
+    if (memcmp(known[i], tmgi, 6) == 0)
+      return 2 + i;
+  AssertFatal(num_known < MAX_MBS_SESSIONS, "more than %d multicast MBS sessions\n", MAX_MBS_SESSIONS);
+  memcpy(known[num_known], tmgi, 6);
+  return 2 + num_known++;
+}
+
+/* Tell the DU that the UE joined: it creates the session's group on the first member, and configures the UE for it
+ * (G-RNTI, PTM RLC entity), which starts an RRC reconfiguration. */
+static void rrc_gNB_mbs_join_du(gNB_RRC_INST *rrc, const gNB_RRC_UE_t *UE, const uint8_t *tmgi)
+{
+  if (rrc->mac_rrc.multicast_ue_join == NULL)
+    return;
+  const f1_ue_data_t ue_data = cu_get_f1_ue_data(UE->rrc_ue_id);
+  f1ap_multicast_ue_join_t req = {
+      .gNB_CU_ue_id = UE->rrc_ue_id,
+      .gNB_DU_ue_id = ue_data.secondary_ue,
+      .mrb_id = mbs_multicast_mrb_id(tmgi),
+  };
+  memcpy(req.tmgi, tmgi, sizeof(req.tmgi));
+  rrc->mac_rrc.multicast_ue_join(ue_data.du_assoc_id, &req);
+}
+
 /* A UE joining one or more multicast MBS sessions through an existing PDU session.
  *
  * The gNB's part of it, per TS 23.247 V18.8.0 clause 7.2.1.3 step 6, is to "use the MBS Session ID to
@@ -1347,6 +1377,7 @@ static int rrc_gNB_process_mbs_join(gNB_RRC_INST *rrc, gNB_RRC_UE_t *UE, const n
       session->mbs_sessions[session->nb_mbs_sessions++] = t->mbs_to_setup_modify[m];
       LOG_I(NR_RRC, "UE %d: PDU session %d joined MBS session %s\n",
             UE->rrc_ue_id, sessMod->pdusession_id, hex);
+      rrc_gNB_mbs_join_du(rrc, UE, t->mbs_to_setup_modify[m].tmgi);
     }
 
     session->status = PDU_SESSION_STATUS_TOMODIFY;
