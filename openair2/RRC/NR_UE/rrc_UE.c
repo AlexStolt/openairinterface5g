@@ -41,6 +41,7 @@
 #include "nr-uesoftmodem.h"
 #include "LAYER2/nr_pdcp/nr_pdcp_oai_api.h"
 #include "LAYER2/nr_pdcp/nr_pdcp_mbs_test.h"
+#include "LAYER2/nr_pdcp/nr_pdcp_asn1_utils.h"
 #include "openair3/SECU/secu_defs.h"
 #include "openair3/SECU/key_nas_deriver.h"
 
@@ -940,6 +941,8 @@ static void rrc_ue_add_bearer(const int ue_id, const NR_DRB_ToAddMod_t *drb, con
  * @brief add, modify and release SRBs and/or DRBs
  * @ref   3GPP TS 38.331
  */
+static void nr_rrc_add_mrb(const NR_UE_RRC_INST_t *rrc, int mrb_id, int sn_size, int t_reordering);
+
 static void nr_rrc_ue_process_RadioBearerConfig(NR_UE_RRC_INST_t *rrc, NR_RadioBearerConfig_t *const radioBearerConfig)
 {
   if (LOG_DEBUGFLAG(DEBUG_ASN1))
@@ -1044,6 +1047,25 @@ static void nr_rrc_ue_process_RadioBearerConfig(NR_UE_RRC_INST_t *rrc, NR_RadioB
     }
   } // drb_ToAddModList //
 
+  /* multicast MRBs (TS 38.331 RadioBearerConfig): created before the CellGroupConfig brings their PTM RLC entity */
+  if (radioBearerConfig->ext1) {
+    const struct NR_MRB_ToReleaseList_r17 *rel = radioBearerConfig->ext1->mrb_ToReleaseList_r17;
+    for (int i = 0; rel && i < rel->list.count; i++)
+      nr_pdcp_release_mrb(rrc->ue_id, *rel->list.array[i]);
+    const struct NR_MRB_ToAddModList_r17 *add = radioBearerConfig->ext1->mrb_ToAddModList_r17;
+    for (int i = 0; add && i < add->list.count; i++) {
+      const NR_MRB_ToAddMod_r17_t *mrb = add->list.array[i];
+      const NR_PDCP_Config_t *pdcp = mrb->pdcp_Config_r17;
+      if (!pdcp || !pdcp->drb || !pdcp->drb->pdcp_SN_SizeDL) {
+        RRCLOG_E("MRB %ld without a PDCP-Config, ignored\n", mrb->mrb_Identity_r17);
+        continue;
+      }
+      const int t_reordering = pdcp->t_Reordering ? decode_t_reordering(*pdcp->t_Reordering) : 0;
+      nr_rrc_add_mrb(rrc, mrb->mrb_Identity_r17, decode_sn_size_dl(*pdcp->drb->pdcp_SN_SizeDL), t_reordering);
+      RRCLOG_I("multicast MRB %ld configured\n", mrb->mrb_Identity_r17);
+    }
+  }
+
   rrc->nrRrcState = RRC_STATE_CONNECTED_NR;
   RRCLOG_I("State = NR_RRC_CONNECTED\n");
 }
@@ -1071,9 +1093,9 @@ static void nr_rrc_release_rlc_entity(NR_UE_RRC_INST_t *rrc, int id)
   }
 }
 
-/* TEMPORARY, see nr_pdcp_mbs_test.h: stands in for the MRB-ToAddMod of RadioBearerConfig (TS 38.331 §6.3.2) that the
- * gNB-CU does not send yet. The multicast session is associated with the first PDU session (TS 23.247 §7.2.1.3) */
-static void nr_rrc_add_mbs_test_mrb(const NR_UE_RRC_INST_t *rrc, int mrb_id)
+/* A multicast MRB. Its session is associated with the first PDU session (TS 23.247 §7.2.1.3: the UE joins through a
+ * PDU session), whose SDAP entity then delivers what the MRB receives. */
+static void nr_rrc_add_mrb(const NR_UE_RRC_INST_t *rrc, int mrb_id, int sn_size, int t_reordering)
 {
   int pdusession_id = 1;
   while (pdusession_id <= NR_MBS_TEST_MAX_PDU_SESSION_ID && !nr_sdap_get_entity(rrc->ue_id, pdusession_id))
@@ -1082,7 +1104,14 @@ static void nr_rrc_add_mbs_test_mrb(const NR_UE_RRC_INST_t *rrc, int mrb_id)
     RRCLOG_E("no PDU session to associate with MRB %d\n", mrb_id);
     return;
   }
-  nr_pdcp_add_mrb(false, rrc->ue_id, mrb_id, pdusession_id, NR_MBS_TEST_PDCP_SN_SIZE, NR_MBS_TEST_PDCP_T_REORDERING);
+  nr_pdcp_add_mrb(false, rrc->ue_id, mrb_id, pdusession_id, sn_size, t_reordering);
+}
+
+/* TEMPORARY, see nr_pdcp_mbs_test.h: stands in for the MRB-ToAddMod when the gNB sends none, which is the case with the
+ * MBS test adapter making every UE join. Does nothing when the MRB came with the RadioBearerConfig. */
+static void nr_rrc_add_mbs_test_mrb(const NR_UE_RRC_INST_t *rrc, int mrb_id)
+{
+  nr_rrc_add_mrb(rrc, mrb_id, NR_MBS_TEST_PDCP_SN_SIZE, NR_MBS_TEST_PDCP_T_REORDERING);
 }
 
 static void nr_rrc_manage_rlc_bearers(NR_UE_RRC_INST_t *rrc, const NR_CellGroupConfig_t *cellGroupConfig)

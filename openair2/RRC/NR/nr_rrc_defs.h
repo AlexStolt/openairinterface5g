@@ -103,6 +103,8 @@ typedef struct pdu_session_param_s {
    * which UE needs which multicast MRB. */
   uint8_t nb_mbs_sessions;
   mbs_session_id_t mbs_sessions[MAX_MBS_SESSIONS];
+  /* whether the UE has been sent the MRB of each of those sessions */
+  bool mbs_mrb_sent[MAX_MBS_SESSIONS];
 } rrc_pdu_session_param_t;
 
 typedef struct drb_s {

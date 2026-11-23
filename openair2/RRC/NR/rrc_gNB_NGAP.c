@@ -1290,7 +1290,7 @@ static void tmgi_hex_string(const uint8_t *tmgi, char *out, size_t out_size)
 
 /* The MRB-Identity of a multicast session, the same for all its members. MRB 1 is the broadcast session's, so
  * multicast sessions take 2 and up, in the order the gNB first sees them. */
-static long mbs_multicast_mrb_id(const uint8_t *tmgi)
+long mbs_multicast_mrb_id(const uint8_t *tmgi)
 {
   static uint8_t known[MAX_MBS_SESSIONS][6];
   static int num_known;
