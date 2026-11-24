@@ -89,8 +89,15 @@ test adapter decides who is a member.
    the group.
 2. The core answers the UE, associates its PDU session with the session in a
    PDU Session Resource Modify Request, and activates the session with
-   Multicast Session Activation. The core must support the multicast join;
-   the core of the broadcast tutorial does not yet.
+   Multicast Session Activation. The core must support the multicast join
+   and leave; the core of the broadcast tutorial does not. An image that
+   does, built from 5G-MAG's `feature/mbs-broadcast-rel19` with the join and
+   leave added, is on Docker Hub; use it in place of the tutorial's core:
+
+   ```bash
+   docker pull phinetech/open5gs_core:mbs-mc
+   CN_IMG=phinetech/open5gs_core:mbs-mc docker compose up -d
+   ```
 3. The gNB-CU records the membership and hands the join to the DU. The DU
    creates the session's group on its first member (DCI 4_2, ACK/NACK
    feedback) and configures the UE: G-RNTI and PTM RLC entity in its

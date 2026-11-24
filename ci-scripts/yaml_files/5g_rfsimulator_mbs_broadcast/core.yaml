@@ -272,6 +272,12 @@ pcrf:
         address: 127.0.0.4
 
 nrf:
+  # the PLMNs whose NFs may register: the 5G-MAG core based on Open5GS 2.8
+  # refuses the others
+  serving:
+    - plmn_id:
+        mcc: 999
+        mnc: 70
   sbi:
     server:
       - address: 127.0.0.10

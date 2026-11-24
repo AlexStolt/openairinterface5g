@@ -64,7 +64,15 @@ The remaining specification gaps are listed under
 
 ## The core network
 
-Use the 5G-MAG fork of Open5GS, which adds the MBS functions:
+A ready image of the core described below is on Docker Hub:
+
+```bash
+docker pull phinetech/open5gs_core:mbs
+docker tag phinetech/open5gs_core:mbs open5gs_core:mbs
+```
+
+With it, continue at [Build the images](#build-the-images). To build the core
+yourself, use the 5G-MAG fork of Open5GS, which adds the MBS functions:
 
 ```bash
 git clone --branch 5mbs-development https://github.com/5G-MAG/open5gs.git
