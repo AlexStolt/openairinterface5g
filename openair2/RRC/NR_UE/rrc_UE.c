@@ -1120,6 +1120,13 @@ static void nr_rrc_manage_rlc_bearers(NR_UE_RRC_INST_t *rrc, const NR_CellGroupC
     for (int i = 0; i < cellGroupConfig->rlc_BearerToReleaseList->list.count; i++) {
       NR_LogicalChannelIdentity_t *lcid = cellGroupConfig->rlc_BearerToReleaseList->list.array[i];
       AssertFatal(lcid, "LogicalChannelIdentity shouldn't be null here\n");
+      if (rrc->mbs_multicast_lcids & (1ULL << *lcid)) {
+        /* the PTM RLC entity of a multicast session the UE left */
+        rrc->mbs_multicast_lcids &= ~(1ULL << *lcid);
+        nr_rlc_release_entity(rrc->ue_id, *lcid);
+        RRCLOG_I("released the PTM RLC entity on LCID %ld\n", *lcid);
+        continue;
+      }
       nr_rrc_release_rlc_entity(rrc, *lcid);
     }
   }
@@ -1128,6 +1135,16 @@ static void nr_rrc_manage_rlc_bearers(NR_UE_RRC_INST_t *rrc, const NR_CellGroupC
     for (int i = 0; i < cellGroupConfig->rlc_BearerToAddModList->list.count; i++) {
       NR_RLC_BearerConfig_t *rlc_bearer = cellGroupConfig->rlc_BearerToAddModList->list.array[i];
       NR_LogicalChannelIdentity_t lcid = rlc_bearer->logicalChannelIdentity;
+      /* PTM RLC entity of a multicast MRB, identified by multicastRLC-BearerConfig instead of servedRadioBearer
+       * (TS 38.331 §6.3.2 RLC-BearerConfig) */
+      if (rlc_bearer->ext2 && rlc_bearer->ext2->multicastRLC_BearerConfig_r17) {
+        if (!(rrc->mbs_multicast_lcids & (1ULL << lcid))) {
+          rrc->mbs_multicast_lcids |= 1ULL << lcid;
+          nr_rlc_add_mrb(rrc->ue_id, rlc_bearer);
+          nr_rrc_add_mbs_test_mrb(rrc, rlc_bearer->ext2->multicastRLC_BearerConfig_r17->servedMBS_RadioBearer_r17);
+        }
+        continue;
+      }
       if (rrc->active_RLC_entity[lcid]) {
         if (rlc_bearer->reestablishRLC)
           nr_rlc_reestablish_entity(rrc->ue_id, lcid);
@@ -1135,13 +1152,6 @@ static void nr_rrc_manage_rlc_bearers(NR_UE_RRC_INST_t *rrc, const NR_CellGroupC
           nr_rlc_reconfigure_entity(rrc->ue_id, lcid, rlc_bearer->rlc_Config);
       } else {
         rrc->active_RLC_entity[lcid] = true;
-        /* PTM RLC entity of a multicast MRB, identified by multicastRLC-BearerConfig instead of servedRadioBearer
-         * (TS 38.331 §6.3.2 RLC-BearerConfig) */
-        if (rlc_bearer->ext2 && rlc_bearer->ext2->multicastRLC_BearerConfig_r17) {
-          nr_rlc_add_mrb(rrc->ue_id, rlc_bearer);
-          nr_rrc_add_mbs_test_mrb(rrc, rlc_bearer->ext2->multicastRLC_BearerConfig_r17->servedMBS_RadioBearer_r17);
-          continue;
-        }
         AssertFatal(rlc_bearer->servedRadioBearer, "servedRadioBearer mandatory in case of setup\n");
         AssertFatal(rlc_bearer->servedRadioBearer->present != NR_RLC_BearerConfig__servedRadioBearer_PR_NOTHING,
                     "Invalid RB for RLC configuration\n");

@@ -1274,7 +1274,7 @@ static bool is_mbs_only_modification(const ngap_pdusession_modify_req_t *req)
 
   for (int i = 0; i < req->nb_pdusessions_tomodify; i++) {
     const pdusession_mod_req_transfer_t *t = &req->pdusession[i].pdusessionTransfer;
-    if (t->nb_mbs_to_setup_modify == 0)
+    if (t->nb_mbs_to_setup_modify == 0 && t->nb_mbs_to_release == 0)
       return false;
     if (t->nb_qos_to_add_modify > 0 || t->nb_qos_to_release > 0)
       return false;
@@ -1316,6 +1316,22 @@ static void rrc_gNB_mbs_join_du(gNB_RRC_INST *rrc, const gNB_RRC_UE_t *UE, const
   };
   memcpy(req.tmgi, tmgi, sizeof(req.tmgi));
   rrc->mac_rrc.multicast_ue_join(ue_data.du_assoc_id, &req);
+}
+
+/* Tell the DU that the UE left: it removes the UE from the session's group and releases its configuration for it
+ * (G-RNTI, PTM RLC entity), which starts an RRC reconfiguration; the CU adds the MRB release to it. */
+static void rrc_gNB_mbs_leave_du(gNB_RRC_INST *rrc, const gNB_RRC_UE_t *UE, const uint8_t *tmgi)
+{
+  if (rrc->mac_rrc.multicast_ue_leave == NULL)
+    return;
+  const f1_ue_data_t ue_data = cu_get_f1_ue_data(UE->rrc_ue_id);
+  f1ap_multicast_ue_leave_t req = {
+      .gNB_CU_ue_id = UE->rrc_ue_id,
+      .gNB_DU_ue_id = ue_data.secondary_ue,
+      .mrb_id = mbs_multicast_mrb_id(tmgi),
+  };
+  memcpy(req.tmgi, tmgi, sizeof(req.tmgi));
+  rrc->mac_rrc.multicast_ue_leave(ue_data.du_assoc_id, &req);
 }
 
 /* A UE joining one or more multicast MBS sessions through an existing PDU session.
@@ -1378,6 +1394,27 @@ static int rrc_gNB_process_mbs_join(gNB_RRC_INST *rrc, gNB_RRC_UE_t *UE, const n
       LOG_I(NR_RRC, "UE %d: PDU session %d joined MBS session %s\n",
             UE->rrc_ue_id, sessMod->pdusession_id, hex);
       rrc_gNB_mbs_join_du(rrc, UE, t->mbs_to_setup_modify[m].tmgi);
+    }
+
+    /* TS 23.247 V18.8.0 clause 7.2.2.2 step 10: "The NG-RAN node removes the UE from this multicast MBS
+     * session". A session the PDU session is not associated with is left alone. */
+    for (int m = 0; m < t->nb_mbs_to_release; m++) {
+      char hex[2 * 6 + 1] = {0};
+      tmgi_hex_string(t->mbs_to_release[m].tmgi, hex, sizeof(hex));
+      int k = 0;
+      while (k < session->nb_mbs_sessions && memcmp(session->mbs_sessions[k].tmgi, t->mbs_to_release[m].tmgi, 6) != 0)
+        k++;
+      if (k == session->nb_mbs_sessions) {
+        LOG_W(NR_RRC, "UE %d: PDU session %d is not associated with MBS session %s\n", UE->rrc_ue_id, sessMod->pdusession_id, hex);
+        continue;
+      }
+      if (session->mbs_mrb_sent[k] && UE->nb_mbs_mrb_release < MAX_MBS_SESSIONS)
+        UE->mbs_mrb_release[UE->nb_mbs_mrb_release++] = mbs_multicast_mrb_id(t->mbs_to_release[m].tmgi);
+      session->nb_mbs_sessions--;
+      session->mbs_sessions[k] = session->mbs_sessions[session->nb_mbs_sessions];
+      session->mbs_mrb_sent[k] = session->mbs_mrb_sent[session->nb_mbs_sessions];
+      LOG_I(NR_RRC, "UE %d: PDU session %d left MBS session %s\n", UE->rrc_ue_id, sessMod->pdusession_id, hex);
+      rrc_gNB_mbs_leave_du(rrc, UE, t->mbs_to_release[m].tmgi);
     }
 
     session->status = PDU_SESSION_STATUS_TOMODIFY;

@@ -30,7 +30,8 @@ Remaining multicast features:
 
 - The shared N3 tunnel of a multicast session (Distribution Setup, TS 23.247
   §7.2.1.4): until it exists, the test adapter supplies the data.
-- Leaving a session, and releasing the group when its last member leaves.
+- Releasing the shared N3 tunnel when the last member leaves (Distribution
+  Release, TS 23.247 §7.2.2.4); the gNB already drops the group then.
 - Multicast over a CU/DU split (F1AP Multicast Context Setup and the multicast
   part of UE Context Modification, TS 38.473).
 - 3GPP also allows PTM retransmissions (TS 38.300 §16.10.5.4 / TS 38.213 §18).
@@ -81,7 +82,11 @@ test adapter decides who is a member.
    ```
 
    The TMGI is 12 hex characters: the 3-octet MBS Service ID, then the PLMN
-   (999/70 is `99f907`). `ciUE mbs_leave <TMGI>` sends the leave.
+   (999/70 is `99f907`). `ciUE mbs_leave <TMGI>` sends the leave
+   (TS 23.247 §7.2.2.2): the core answers the UE, sends the gNB the MBS Session
+   To Release List, and the gNB releases the UE's G-RNTI, PTM RLC entity and
+   MRB in an RRCReconfiguration. When the last member has left, the gNB drops
+   the group.
 2. The core answers the UE, associates its PDU session with the session in a
    PDU Session Resource Modify Request, and activates the session with
    Multicast Session Activation. The core must support the multicast join;
@@ -259,11 +264,11 @@ openair2/RRC/NR_UE/rrc_UE.c                   nr_rrc_ue_process_rrcReconfigurati
 
 - `nr_mac_add_mbs_member()`
   - Today: Adds the multicast part to the CellGroupConfig of the UE and sends it to the CU and reserves the PTM HARQ processes. A join through the core calls it from `multicast_ue_join()`; the test adapter with `join_ues = 1` (`join_ues()`) calls it every 100 ms for every connected UE.
-  - TODO: With a CU/DU split, call it when the DU receives a UE Context Setup/Modification that carries the multicast session of the UE (Multicast MBS Session List, TS 38.473 §9.3.1.272). The counterpart for leaving, `nr_mac_remove_mbs_member()`, has no caller yet.
+  - TODO: With a CU/DU split, call it when the DU receives a UE Context Setup/Modification that carries the multicast session of the UE (Multicast MBS Session List, TS 38.473 §9.3.1.272). Leaving goes through `multicast_ue_leave()` and `nr_mac_leave_mbs_member()`, which releases the UE's G-RNTI and PTM RLC entity.
 
 - `nr_mac_request_reconfiguration()`
   - Today: Sends the new CellGroupConfig to the CU in a UE Context Modification Required. The CU sends it to the UE in an RRCReconfiguration, with the MRB-ToAddMod of each session the UE joined through the core and was not configured for yet (`get_new_mrbs()`). If the CU refuses, `ue_context_modification_refuse()` (`mac_rrc_dl_handler.c`) removes the UE from the group again.
-  - TODO: The MRB-ToReleaseList when a UE leaves. If the CU builds the multicast CellGroupConfig itself, remove the call of `add_mbs_cellGroupConfig()` in `nr_mac_add_mbs_member()`, which then only keeps the MAC state.
+  - TODO: If the CU builds the multicast CellGroupConfig itself, remove the call of `add_mbs_cellGroupConfig()` in `nr_mac_add_mbs_member()`, which then only keeps the MAC state.
 
 - `nr_pdcp_add_mrb()`
   - Today: Creates the gNB MRB PDCP entity, without ciphering or integrity (TS 38.323 §5.8, §5.9). The multicast adapter calls it on the first join, `multicast_ue_join()` when it creates the group, and broadcast from `broadcast_context_setup()`. All use the fixed SN size and t-Reordering of `nr_pdcp_mbs_test.h`; for a join through the core, the CU signals the same values to the UE in the MRB-ToAddMod.

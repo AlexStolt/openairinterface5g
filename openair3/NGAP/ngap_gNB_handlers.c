@@ -1187,6 +1187,7 @@ static bool decodePDUSessionResourceModify(pdusession_mod_req_transfer_t *out, c
   out->nb_qos_to_add_modify = 0;
   out->nb_qos_to_release = 0;
   out->nb_mbs_to_setup_modify = 0;
+  out->nb_mbs_to_release = 0;
 
   NGAP_PDUSessionResourceModifyRequestTransfer_t *pdusessionTransfer = (NGAP_PDUSessionResourceModifyRequestTransfer_t *)decoded;
   for (int j = 0; j < pdusessionTransfer->protocolIEs.list.count; j++) {
@@ -1279,6 +1280,28 @@ static bool decodePDUSessionResourceModify(pdusession_mod_req_transfer_t *out, c
                  item->mBS_SessionID.tMGI.buf,
                  sizeof(out->mbs_to_setup_modify[0].tmgi));
           out->nb_mbs_to_setup_modify++;
+        }
+        break;
+      }
+      /* MBS Session To Release List (ProtocolIE-ID 317, TS 38.413 V17.10.0 clause 9.3.1.215): the
+       * multicast MBS sessions the UE leaves. The cause of each item says why; the gNB removes the UE
+       * either way. */
+      case NGAP_ProtocolIE_ID_id_MBSSessionToReleaseList: {
+        NGAP_MBSSessionToReleaseList_t *list = &pdusessionTransfer_ies->value.choice.MBSSessionToReleaseList;
+        if (list->list.count > MAX_MBS_SESSIONS) {
+          LOG_E(NGAP, "MBSSessionToReleaseList count %d exceeds MAX_MBS_SESSIONS %d\n", list->list.count, MAX_MBS_SESSIONS);
+          ASN_STRUCT_FREE(asn_DEF_NGAP_PDUSessionResourceModifyRequestTransfer, pdusessionTransfer);
+          return false;
+        }
+        for (int i = 0; i < list->list.count; i++) {
+          NGAP_MBSSessionToReleaseItem_t *item = list->list.array[i];
+          if (!item || item->mBS_SessionID.tMGI.size != sizeof(out->mbs_to_release[0].tmgi)) {
+            LOG_E(NGAP, "Malformed MBSSessionToReleaseItem at index %d\n", i);
+            ASN_STRUCT_FREE(asn_DEF_NGAP_PDUSessionResourceModifyRequestTransfer, pdusessionTransfer);
+            return false;
+          }
+          memcpy(out->mbs_to_release[out->nb_mbs_to_release].tmgi, item->mBS_SessionID.tMGI.buf, sizeof(out->mbs_to_release[0].tmgi));
+          out->nb_mbs_to_release++;
         }
         break;
       }

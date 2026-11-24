@@ -1389,6 +1389,10 @@ static int nr_rrc_reconfiguration_req(gNB_RRC_INST *rrc, gNB_RRC_UE_t *ue_p)
   ue_p->ongoing_reconfiguration = true;
 
   nr_rrc_reconfig_param_t params = {.cgc = &ue_p->mcg, .transaction_id = xid, .mrb_config_list = get_new_mrbs(ue_p)};
+  /* the MRBs of the multicast sessions the UE left (TS 38.331 mrb-ToReleaseList) */
+  for (int i = 0; i < ue_p->nb_mbs_mrb_release && params.n_mrb_rel < (int)sizeofArray(params.mrb_rel); i++)
+    params.mrb_rel[params.n_mrb_rel++] = ue_p->mbs_mrb_release[i];
+  ue_p->nb_mbs_mrb_release = 0;
   byte_array_t msg = do_RRCReconfiguration(&params);
   if (msg.len <= 0) {
     LOG_E(NR_RRC, "UE %d: Failed to generate RRCReconfiguration\n", ue_p->rrc_ue_id);

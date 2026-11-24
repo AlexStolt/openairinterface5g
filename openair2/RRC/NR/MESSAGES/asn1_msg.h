@@ -50,6 +50,8 @@ typedef struct {
   NR_SRB_ToAddModList_t *srb_config_list;
   NR_DRB_ToAddModList_t *drb_config_list;
   NR_MRB_ToAddModList_r17_t *mrb_config_list;
+  long mrb_rel[8];
+  int n_mrb_rel;
   int *drb_rel;
   int n_drb_rel;
   NR_SecurityConfig_t *security_config;

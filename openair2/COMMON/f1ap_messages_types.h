@@ -1715,6 +1715,9 @@ typedef struct f1ap_multicast_ue_join_s {
   long mrb_id;
 } f1ap_multicast_ue_join_t;
 
+/* A UE leaves a multicast session, at the DU: the counterpart of f1ap_multicast_ue_join_t. */
+typedef f1ap_multicast_ue_join_t f1ap_multicast_ue_leave_t;
+
 /* Broadcast Context Release (TS 38.473 §8.14.2): the session to take off the air. */
 typedef struct f1ap_broadcast_ctx_release_s {
   uint32_t gNB_cu_mbs_f1ap_id;

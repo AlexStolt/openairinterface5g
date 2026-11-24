@@ -249,6 +249,9 @@ typedef struct gNB_RRC_UE_s {
 
   //SA block
   seq_arr_t pduSessions;
+  /* the multicast MRBs of the sessions the UE left, to release in the next RRCReconfiguration */
+  int nb_mbs_mrb_release;
+  long mbs_mrb_release[MAX_MBS_SESSIONS];
   // Established DRBs
   seq_arr_t drbs;
 
@@ -448,6 +451,7 @@ typedef struct nr_mac_rrc_dl_if_s {
   broadcast_context_setup_func_t broadcast_context_setup;
   broadcast_context_release_func_t broadcast_context_release;
   multicast_ue_join_func_t multicast_ue_join;
+  multicast_ue_leave_func_t multicast_ue_leave;
   f1_setup_failure_func_t f1_setup_failure;
   gnb_du_configuration_update_ack_func_t gnb_du_configuration_update_acknowledge;
   ue_context_setup_request_func_t ue_context_setup_request;

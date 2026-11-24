@@ -126,6 +126,12 @@ static void multicast_ue_join_direct(sctp_assoc_t assoc_id, const f1ap_multicast
   multicast_ue_join(req);
 }
 
+static void multicast_ue_leave_direct(sctp_assoc_t assoc_id, const f1ap_multicast_ue_leave_t *req)
+{
+  AssertFatal(assoc_id == -1, "illegal assoc_id %d\n", assoc_id);
+  multicast_ue_leave(req);
+}
+
 void mac_rrc_dl_direct_init(nr_mac_rrc_dl_if_t *mac_rrc)
 {
   mac_rrc->f1_reset = f1_reset_cu_initiated_direct;
@@ -134,6 +140,7 @@ void mac_rrc_dl_direct_init(nr_mac_rrc_dl_if_t *mac_rrc)
   mac_rrc->broadcast_context_setup = broadcast_context_setup_direct;
   mac_rrc->broadcast_context_release = broadcast_context_release_direct;
   mac_rrc->multicast_ue_join = multicast_ue_join_direct;
+  mac_rrc->multicast_ue_leave = multicast_ue_leave_direct;
   mac_rrc->f1_setup_failure = f1_setup_failure_direct;
   mac_rrc->gnb_du_configuration_update_acknowledge = gnb_du_configuration_update_ack_direct;
   mac_rrc->ue_context_setup_request = ue_context_setup_request_direct;

@@ -122,6 +122,8 @@
 #include "NGAP_MBS-SessionID.h"
 #include "NGAP_MBSSessionSetuporModifyRequestList.h"
 #include "NGAP_MBSSessionSetuporModifyRequestItem.h"
+#include "NGAP_MBSSessionToReleaseList.h"
+#include "NGAP_MBSSessionToReleaseItem.h"
 #include "NGAP_MBSSessionSetupResponseList.h"
 #include "NGAP_MBSSessionSetupResponseItem.h"
 #include "NGAP_MBS-SupportIndicator.h"

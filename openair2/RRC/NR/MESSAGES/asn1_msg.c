@@ -521,16 +521,23 @@ static NR_RRCReconfiguration_IEs_t *build_RRCReconfiguration_IEs(const nr_rrc_re
   // radioBearerConfig
   if ((params->srb_config_list && params->srb_config_list->list.size)
       || (params->drb_config_list && params->drb_config_list->list.size)
-      || (params->mrb_config_list && params->mrb_config_list->list.size)) {
+      || (params->mrb_config_list && params->mrb_config_list->list.size) || params->n_mrb_rel) {
     ie->radioBearerConfig = calloc_or_fail(1, sizeof(*ie->radioBearerConfig));
     struct NR_RadioBearerConfig *cfg = ie->radioBearerConfig;
     cfg->srb_ToAddModList = params->srb_config_list;
     cfg->drb_ToAddModList = params->drb_config_list;
     cfg->securityConfig = params->security_config;
     cfg->srb3_ToRelease = NULL;
-    if (params->mrb_config_list && params->mrb_config_list->list.size) {
+    if ((params->mrb_config_list && params->mrb_config_list->list.size) || params->n_mrb_rel)
       cfg->ext1 = calloc_or_fail(1, sizeof(*cfg->ext1));
+    if (params->mrb_config_list && params->mrb_config_list->list.size)
       cfg->ext1->mrb_ToAddModList_r17 = params->mrb_config_list;
+    if (params->n_mrb_rel) {
+      asn1cCalloc(cfg->ext1->mrb_ToReleaseList_r17, to_release);
+      for (int i = 0; i < params->n_mrb_rel; i++) {
+        asn1cSequenceAdd(to_release->list, NR_MRB_Identity_r17_t, mrb_release);
+        *mrb_release = params->mrb_rel[i];
+      }
     }
     if (params->n_drb_rel) {
       asn1cCalloc(cfg->drb_ToReleaseList, to_release);

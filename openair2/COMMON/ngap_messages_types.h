@@ -989,6 +989,10 @@ typedef struct {
    * and the UE's PDU Session context". */
   uint8_t nb_mbs_to_setup_modify;
   mbs_session_id_t mbs_to_setup_modify[MAX_MBS_SESSIONS];
+  /* MBS Session To Release List (Optional, TS 38.413 V17.10.0 clause 9.3.1.215): the multicast MBS
+   * sessions the UE leaves (TS 23.247 V18.8.0 clause 7.2.2.2 step 7). */
+  uint8_t nb_mbs_to_release;
+  mbs_session_id_t mbs_to_release[MAX_MBS_SESSIONS];
 } pdusession_mod_req_transfer_t;
 
 /* PDU Session Resource Setup/Modify Request Item */

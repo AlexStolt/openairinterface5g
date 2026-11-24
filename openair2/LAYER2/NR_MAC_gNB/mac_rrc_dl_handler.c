@@ -1582,3 +1582,35 @@ void multicast_ue_join(const f1ap_multicast_ue_join_t *req)
   if (!joined)
     LOG_E(NR_MAC, "MBS: UE %04x cannot join the multicast group G-RNTI %04x\n", req->gNB_DU_ue_id, g_rnti);
 }
+
+/* A UE leaves a multicast session, at the DU: the counterpart of multicast_ue_join(). The UE is released from the
+ * session's G-RNTI and PTM RLC entity in an RRCReconfiguration. When the last member is gone, the group goes too: the
+ * gNB transmits a multicast session only towards UEs that joined it. */
+void multicast_ue_leave(const f1ap_multicast_ue_leave_t *req)
+{
+  DevAssert(req != NULL);
+  gNB_MAC_INST *mac = RC.nrmac[0];
+  NR_SCHED_LOCK(&mac->sched_lock);
+  NR_UE_info_t *UE = find_connected_nr_ue(&mac->UE_info, req->gNB_DU_ue_id);
+  nr_mbs_group_t *group = NULL;
+  for (nr_mbs_group_t *const *g = mac->UE_info.mbs_group_list; *g != NULL && group == NULL; g++)
+    if (!(*g)->config.broadcast && memcmp((*g)->config.tmgi, req->tmgi, sizeof(req->tmgi)) == 0)
+      group = *g;
+  if (UE == NULL || group == NULL) {
+    NR_SCHED_UNLOCK(&mac->sched_lock);
+    LOG_W(NR_MAC, "MBS: multicast leave of UE %04x from a group this DU does not have\n", req->gNB_DU_ue_id);
+    return;
+  }
+  nr_mac_leave_mbs_member(mac, group, UE);
+  const rnti_t g_rnti = group->g_rnti;
+  const bool empty = group->num_members == 0 && group->num_pending == 0;
+  if (empty)
+    nr_mac_release_mbs_group(mac, g_rnti);
+  NR_SCHED_UNLOCK(&mac->sched_lock);
+  if (empty) {
+    nr_pdcp_remove_UE(NR_PDCP_MBS_CONTEXT_ID(g_rnti));
+    LOG_A(NR_MAC,
+          "MBS: last member left, multicast group for TMGI %02x%02x%02x%02x%02x%02x on G-RNTI %04x released\n",
+          req->tmgi[0], req->tmgi[1], req->tmgi[2], req->tmgi[3], req->tmgi[4], req->tmgi[5], g_rnti);
+  }
+}
