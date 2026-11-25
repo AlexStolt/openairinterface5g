@@ -38,7 +38,7 @@ def main():
 
     before = received()
     for packet in range(1, 21):
-        docker("exec", "mbs-cn", "sendip", "-p", "ipv4", "-is", "192.168.77.10", "-id", "239.0.0.25", "239.0.0.25")
+        docker("exec", "mbs-as", "sendip", "-p", "ipv4", "-is", "192.168.77.20", "-id", "239.0.0.25", "239.0.0.25")
         time.sleep(0.2)
         delta = [a - b for a, b in zip(received(), before)]
         print(f"Sent {packet:2}: UE counters {delta}", flush=True)
