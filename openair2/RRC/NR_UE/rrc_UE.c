@@ -17,6 +17,9 @@
 #include "NR_SIB20-r17.h"
 #include "NR_CFR-ConfigMCCH-MTCH-r17.h"
 #include "NR_MBSBroadcastConfiguration-r17.h"
+#include "NR_MCCH-Message-r17.h"
+#include "NR_LocationAndBandwidthBroadcast-r17.h"
+#include "NR_CFR-ConfigMCCH-MTCH-r17.h"
 #include "NR_MBSBroadcastConfiguration-r17-IEs.h"
 #include "NR_MBS-SessionInfo-r17.h"
 #include "NR_MRB-InfoBroadcast-r17.h"
@@ -340,30 +343,83 @@ static void nr_rrc_ue_add_mbs_broadcast_mrb(NR_UE_RRC_INST_t *rrc, const NR_MRB_
   rrc->mbs_broadcast_lcids |= 1ULL << lcid;
 }
 
-/* MBS broadcast (TS 38.300 §16.10.6): the UE takes the sessions of the cell, and everything it needs to receive them,
- * from what the cell broadcasts. The network is not told, and no connection is needed.
- *
- * INTERIM: the list of sessions belongs on the MCCH, which SIB20 only points at. Until there is one, the gNB carries the
- * MBSBroadcastConfiguration in the lateNonCriticalExtension of SIB20, which is read again periodically (sib20_timer).
- * The message is the real one, so this function moves to the MCCH as it is */
+/* MBS broadcast (TS 38.331 §5.9.1): SIB20 says where the MCCH is, and gives the CORESET of the CFR the MCCH and the MTCHs
+ * are sent in. The UE then acquires the MCCH, which lists the sessions */
 static void nr_rrc_ue_process_sib20(NR_UE_RRC_INST_t *rrc, const NR_SIB20_r17_t *sib20)
+{
+  nr_mac_rrc_message_t rrc_msg = {.payload_type = NR_MAC_RRC_CONFIG_MBS_MCCH};
+  nr_mac_rrc_config_mbs_mcch_t *mcch = &rrc_msg.payload.config_mbs_mcch;
+  /* the CFR is CORESET#0 if locationAndBandwidthBroadcast is absent (TS 38.331 §6.3.2 CFR-ConfigMCCH-MTCH) */
+  const struct NR_LocationAndBandwidthBroadcast_r17 *cfr =
+      sib20->cfr_ConfigMCCH_MTCH_r17 ? sib20->cfr_ConfigMCCH_MTCH_r17->locationAndBandwidthBroadcast_r17 : NULL;
+  if (!cfr || cfr->present != NR_LocationAndBandwidthBroadcast_r17_PR_sameAsSib1ConfiguredLocationAndBW)
+    RRCLOG_W("MBS: a CFR other than the initial BWP is not supported, MBS broadcast may not be received\n");
+  if (sib20->cfr_ConfigMCCH_MTCH_r17 && sib20->cfr_ConfigMCCH_MTCH_r17->commonControlResourceSetExt_r17)
+    asn_copy(&asn_DEF_NR_ControlResourceSet,
+             (void **)&mcch->coreset,
+             sib20->cfr_ConfigMCCH_MTCH_r17->commonControlResourceSetExt_r17);
+  const NR_MCCH_Config_r17_t *cfg = &sib20->mcch_Config_r17;
+  const struct NR_MCCH_RepetitionPeriodAndOffset_r17 *rep = &cfg->mcch_RepetitionPeriodAndOffset_r17;
+  /* rf1 to rf256: 2^(present - 1) radio frames, the offset is the value of the choice */
+  mcch->repetition_period = 1 << (rep->present - NR_MCCH_RepetitionPeriodAndOffset_r17_PR_rf1_r17);
+  switch (rep->present) {
+    case NR_MCCH_RepetitionPeriodAndOffset_r17_PR_rf1_r17:
+      mcch->repetition_offset = rep->choice.rf1_r17;
+      break;
+    case NR_MCCH_RepetitionPeriodAndOffset_r17_PR_rf2_r17:
+      mcch->repetition_offset = rep->choice.rf2_r17;
+      break;
+    case NR_MCCH_RepetitionPeriodAndOffset_r17_PR_rf4_r17:
+      mcch->repetition_offset = rep->choice.rf4_r17;
+      break;
+    case NR_MCCH_RepetitionPeriodAndOffset_r17_PR_rf8_r17:
+      mcch->repetition_offset = rep->choice.rf8_r17;
+      break;
+    case NR_MCCH_RepetitionPeriodAndOffset_r17_PR_rf16_r17:
+      mcch->repetition_offset = rep->choice.rf16_r17;
+      break;
+    case NR_MCCH_RepetitionPeriodAndOffset_r17_PR_rf32_r17:
+      mcch->repetition_offset = rep->choice.rf32_r17;
+      break;
+    case NR_MCCH_RepetitionPeriodAndOffset_r17_PR_rf64_r17:
+      mcch->repetition_offset = rep->choice.rf64_r17;
+      break;
+    case NR_MCCH_RepetitionPeriodAndOffset_r17_PR_rf128_r17:
+      mcch->repetition_offset = rep->choice.rf128_r17;
+      break;
+    case NR_MCCH_RepetitionPeriodAndOffset_r17_PR_rf256_r17:
+      mcch->repetition_offset = rep->choice.rf256_r17;
+      break;
+    default:
+      RRCLOG_E("MBS: invalid mcch-RepetitionPeriodAndOffset in SIB20\n");
+      ASN_STRUCT_FREE(asn_DEF_NR_ControlResourceSet, mcch->coreset);
+      return;
+  }
+  mcch->window_start_slot = cfg->mcch_WindowStartSlot_r17;
+  /* mcch-WindowDuration (Need S): the window is the start slot alone if absent */
+  static const int window_duration[] = {2, 4, 8, 10, 20, 40, 80, 160};
+  mcch->window_duration = cfg->mcch_WindowDuration_r17 ? window_duration[*cfg->mcch_WindowDuration_r17] : 1;
+  /* rf2 to rf65536 */
+  mcch->modification_period = 2 << cfg->mcch_ModificationPeriod_r17;
+  RRCLOG_I("MBS: MCCH every %d radio frames (offset %d), window of %d slots from slot %d, modification period %d radio frames\n",
+           mcch->repetition_period,
+           mcch->repetition_offset,
+           mcch->window_duration,
+           mcch->window_start_slot,
+           mcch->modification_period);
+  nr_rrc_send_msg_to_mac(rrc, &rrc_msg);
+}
+
+/* MBS broadcast (TS 38.300 §16.10.6): the UE takes the sessions of the cell, and everything it needs to receive them,
+ * from the MBSBroadcastConfiguration of the MCCH (TS 38.331 §5.9.2.4). The network is not told, and no connection is
+ * needed */
+static void nr_rrc_ue_process_mbs_broadcast_configuration(NR_UE_RRC_INST_t *rrc, const NR_MBSBroadcastConfiguration_r17_t *cfg)
 {
   nr_mac_rrc_message_t rrc_msg = {.payload_type = NR_MAC_RRC_CONFIG_MBS_BROADCAST};
   nr_mac_rrc_config_mbs_broadcast_t *bc = &rrc_msg.payload.config_mbs_broadcast;
-  if (sib20->cfr_ConfigMCCH_MTCH_r17 && sib20->cfr_ConfigMCCH_MTCH_r17->commonControlResourceSetExt_r17)
-    asn_copy(&asn_DEF_NR_ControlResourceSet, (void **)&bc->coreset, sib20->cfr_ConfigMCCH_MTCH_r17->commonControlResourceSetExt_r17);
-
-  NR_MBSBroadcastConfiguration_r17_t *cfg = NULL;
   const NR_MBS_SessionInfoList_r17_t *sessions = NULL;
-  if (sib20->lateNonCriticalExtension) {
-    const OCTET_STRING_t *ext = sib20->lateNonCriticalExtension;
-    asn_dec_rval_t dec = uper_decode(NULL, &asn_DEF_NR_MBSBroadcastConfiguration_r17, (void **)&cfg, ext->buf, ext->size, 0, 0);
-    if (dec.code == RC_OK
-        && cfg->criticalExtensions.present == NR_MBSBroadcastConfiguration_r17__criticalExtensions_PR_mbsBroadcastConfiguration_r17)
-      sessions = cfg->criticalExtensions.choice.mbsBroadcastConfiguration_r17->mbs_SessionInfoList_r17;
-    else
-      RRCLOG_W("MBS: could not decode the MBSBroadcastConfiguration carried in SIB20\n");
-  }
+  if (cfg->criticalExtensions.present == NR_MBSBroadcastConfiguration_r17__criticalExtensions_PR_mbsBroadcastConfiguration_r17)
+    sessions = cfg->criticalExtensions.choice.mbsBroadcastConfiguration_r17->mbs_SessionInfoList_r17;
 
   uint64_t lcids = 0;
   for (int i = 0; sessions && i < sessions->list.count && bc->num_sessions < (int)sizeofArray(bc->g_rnti); i++) {
@@ -402,8 +458,23 @@ static void nr_rrc_ue_process_sib20(NR_UE_RRC_INST_t *rrc, const NR_SIB20_r17_t 
   rrc->mbs_broadcast_lcids &= lcids;
   rrc->mbs_broadcast_num = bc->num_sessions;
   memcpy(rrc->mbs_broadcast_g_rnti, bc->g_rnti, sizeof(rrc->mbs_broadcast_g_rnti));
-  ASN_STRUCT_FREE(asn_DEF_NR_MBSBroadcastConfiguration_r17, cfg);
   nr_rrc_send_msg_to_mac(rrc, &rrc_msg);
+}
+
+/* MCCH-Message (TS 38.331 §6.2.1), acquired by the MAC (TS 38.331 §5.9.2.3) */
+static void nr_rrc_ue_decode_mcch(NR_UE_RRC_INST_t *rrc, const uint8_t *buf, int len)
+{
+  NR_MCCH_Message_r17_t *msg = NULL;
+  asn_dec_rval_t dec = uper_decode_complete(NULL, &asn_DEF_NR_MCCH_Message_r17, (void **)&msg, buf, len);
+  if (dec.code != RC_OK || msg->message.present != NR_MCCH_MessageType_r17_PR_c1
+      || msg->message.choice.c1->present != NR_MCCH_MessageType_r17__c1_PR_mbsBroadcastConfiguration_r17) {
+    RRCLOG_W("MBS: could not decode the MCCH-Message of %d bytes\n", len);
+    ASN_STRUCT_FREE(asn_DEF_NR_MCCH_Message_r17, msg);
+    return;
+  }
+  RRCLOG_I("MBS: MCCH acquired\n");
+  nr_rrc_ue_process_mbs_broadcast_configuration(rrc, msg->message.choice.c1->choice.mbsBroadcastConfiguration_r17);
+  ASN_STRUCT_FREE(asn_DEF_NR_MCCH_Message_r17, msg);
 }
 
 static void nr_decode_SI(NR_UE_RRC_SI_INFO *SI_info, NR_SystemInformation_t *si, NR_UE_RRC_INST_t *rrc, int hfn, int frame)
@@ -417,9 +488,7 @@ static void nr_decode_SI(NR_UE_RRC_SI_INFO *SI_info, NR_SystemInformation_t *si,
   for (int i = 0; i < si->criticalExtensions.choice.systemInformation->sib_TypeAndInfo.list.count; i++) {
     SystemInformation_IEs__sib_TypeAndInfo__Member *typeandinfo;
     typeandinfo = si->criticalExtensions.choice.systemInformation->sib_TypeAndInfo.list.array[i];
-    /* SIB20 is read again and again while it stands in for the MCCH */
-    if (typeandinfo->present != NR_SystemInformation_IEs__sib_TypeAndInfo__Member_PR_sib20_v1700)
-      LOG_A(NR_RRC, "Found SIB%d\n", typeandinfo->present + 1);
+    LOG_A(NR_RRC, "Found SIB%d\n", typeandinfo->present + 1);
     switch(typeandinfo->present) {
       case NR_SystemInformation_IEs__sib_TypeAndInfo__Member_PR_sib2:
         SI_info->sib2_validity = true;
@@ -3684,6 +3753,11 @@ void *rrc_nrue(void *notUsed)
   case NR_RRC_MAC_CCCH_DATA_IND: {
     NRRrcMacCcchDataInd *ind = &NR_RRC_MAC_CCCH_DATA_IND(msg_p);
     nr_rrc_ue_decode_ccch(rrc, ind);
+  } break;
+
+  case NR_RRC_MAC_MCCH_DATA_IND: {
+    NRRrcMacMcchDataInd *ind = &NR_RRC_MAC_MCCH_DATA_IND(msg_p);
+    nr_rrc_ue_decode_mcch(rrc, ind->sdu, ind->sdu_size);
   } break;
 
   case NR_RRC_MAC_PCCH_DATA_IND: {

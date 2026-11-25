@@ -2206,6 +2206,38 @@ void fill_dci_pdu_rel15(const NR_UE_ServingCell_Info_t *servingCellInfo,
           dci_pdu_rel15->pdsch_to_harq_feedback_timing_indicator.val);
     break;
 
+  case NR_DL_DCI_FORMAT_4_0:
+    /* TS 38.212 §7.3.1.5.1: pack MSB-first in the order of the field description, the reserved bits are left to 0 */
+    AssertFatal(rnti_type == TYPE_G_RNTI_ || rnti_type == TYPE_MCCH_RNTI_,
+                "DCI format 4_0 is only scrambled by G-RNTI or MCCH-RNTI, not %s\n",
+                rnti_types(rnti_type));
+    fsize = dci_pdu_rel15->frequency_domain_assignment.nbits;
+    *dci_pdu |= (dci_pdu_rel15->frequency_domain_assignment.val & ((1U << fsize) - 1)) * (1ULL << (dci_size - pos - fsize));
+    pos += fsize;
+    *dci_pdu |= (dci_pdu_rel15->time_domain_assignment.val & 0xf) * (1ULL << (dci_size - pos - 4));
+    pos += 4;
+    *dci_pdu |= (dci_pdu_rel15->vrb_to_prb_mapping.val & 1) * (1ULL << (dci_size - pos - 1));
+    pos += 1;
+    *dci_pdu |= (dci_pdu_rel15->mcs & 0x1f) * (1ULL << (dci_size - pos - 5));
+    pos += 5;
+    *dci_pdu |= (dci_pdu_rel15->rv & 0x3) * (1ULL << (dci_size - pos - 2));
+    pos += 2;
+    DevAssert(dci_size - pos == NR_DCI_FORMAT_4_0_RESERVED_BITS);
+    // MCCH change notification, reserved with G-RNTI
+    if (rnti_type == TYPE_MCCH_RNTI_)
+      *dci_pdu |= (dci_pdu_rel15->mcch_change_notification & 0x3) * (1ULL << (dci_size - pos - 2));
+    LOG_D(NR_MAC,
+          "%s DCI 4_0 packed: size %d payload 0x%lx FDA %u TDA %u mcs %u rv %u MCCH change %u\n",
+          rnti_types(rnti_type),
+          dci_size,
+          *dci_pdu,
+          dci_pdu_rel15->frequency_domain_assignment.val,
+          dci_pdu_rel15->time_domain_assignment.val,
+          dci_pdu_rel15->mcs,
+          dci_pdu_rel15->rv,
+          dci_pdu_rel15->mcch_change_notification);
+    break;
+
   case NR_UL_DCI_FORMAT_0_0:
     switch (rnti_type) {
       case TYPE_C_RNTI_:

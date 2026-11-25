@@ -2922,12 +2922,11 @@ uint16_t get_rb_bwp_dci(nr_dci_format_t format,
       N_RB = ul_bwp_size;
   }
   else {
-    // TS 38.212 §7.3.1.5.2: DCI format 4_1 is sized on CORESET 0 like DCI format 1_0 in a CSS
-    if ((format == NR_DL_DCI_FORMAT_1_0 && ss_type == NR_SearchSpace__searchSpaceType_PR_common)
+    // TS 38.212 §7.3.1.5.1, §7.3.1.5.2: DCI formats 4_0 and 4_1 are sized on CORESET 0 like DCI format 1_0 in a CSS
+    if ((format == NR_DL_DCI_FORMAT_1_0 && ss_type == NR_SearchSpace__searchSpaceType_PR_common) || format == NR_DL_DCI_FORMAT_4_0
         || format == NR_DL_DCI_FORMAT_4_1) {
       N_RB = cset0_bwp_size ? cset0_bwp_size : initial_dl_bwp_size;
-    }
-    else
+    } else
       N_RB = dl_bwp_size;
   }
   return N_RB;
@@ -3093,6 +3092,32 @@ bool nr_dci_4_2_unpack(dci_pdu_rel15_t *dci, const uint8_t *payload, int size)
   return remaining == 0;
 }
 #undef DCI_4_2_FIELDS
+
+/* TS 38.212 §7.3.1.5.1: DCI format 4_0, the FDRA taking what the 28 fixed bits leave of the size given by nr_dci_size().
+ * The MCCH change notification is read whatever the RNTI, it is reserved, i.e., 0, with G-RNTI; the reserved bits are
+ * ignored. */
+bool nr_dci_4_0_unpack(dci_pdu_rel15_t *dci, const uint8_t *payload, int size)
+{
+  const int fdra_bits = size - 12 - NR_DCI_FORMAT_4_0_RESERVED_BITS;
+  if (fdra_bits < 1 || fdra_bits > 16 || size > 64)
+    return false;
+  uint64_t bits;
+  memcpy(&bits, payload, sizeof(bits));
+  int remaining = size;
+#define UNPACK(field, n)                                  \
+  do {                                                    \
+    remaining -= (n);                                     \
+    dci->field = (bits >> remaining) & ((1U << (n)) - 1); \
+  } while (0)
+  UNPACK(frequency_domain_assignment.val, fdra_bits);
+  UNPACK(time_domain_assignment.val, 4);
+  UNPACK(vrb_to_prb_mapping.val, 1);
+  UNPACK(mcs, 5);
+  UNPACK(rv, 2);
+  UNPACK(mcch_change_notification, NR_DCI_FORMAT_4_0_MCCH_CHANGE_NOTIFICATION_BITS);
+#undef UNPACK
+  return remaining == NR_DCI_FORMAT_4_0_RESERVED_BITS - NR_DCI_FORMAT_4_0_MCCH_CHANGE_NOTIFICATION_BITS;
+}
 
 uint16_t nr_dci_size(const NR_UE_DL_BWP_t *DL_BWP,
                      const NR_UE_UL_BWP_t *UL_BWP,
@@ -3461,6 +3486,16 @@ uint16_t nr_dci_size(const NR_UE_DL_BWP_t *DL_BWP,
       dci_pdu->vrb_to_prb_mapping.nbits = 1;
       dci_pdu->dai[0].nbits = 2;
       dci_pdu->pdsch_to_harq_feedback_timing_indicator.nbits = 3;
+      break;
+
+    case NR_DL_DCI_FORMAT_4_0:
+      /// TS 38.212 §7.3.1.5.1: Time Domain assgnmt 4, VRB2PRB 1, MCS 5, RV 2, then NR_DCI_FORMAT_4_0_RESERVED_BITS (16) -- 28.
+      /// No NDI, HARQ process number or HARQ-ACK fields: there is no HARQ-ACK for broadcast (TS 38.213 §18).
+      size = 28;
+      dci_pdu->frequency_domain_assignment.nbits = ceil_log2_u32((N_RB * (N_RB + 1)) >> 1);
+      size += dci_pdu->frequency_domain_assignment.nbits;
+      dci_pdu->time_domain_assignment.nbits = 4;
+      dci_pdu->vrb_to_prb_mapping.nbits = 1;
       break;
 
     case NR_DL_DCI_FORMAT_2_0:
@@ -5351,7 +5386,8 @@ rnti_t nr_get_MsgB_rnti(uint8_t s_id, uint8_t t_id, uint8_t f_id, uint8_t ul_car
 
 int get_FeedbackDisabled(NR_DownlinkHARQ_FeedbackDisabled_r17_t *downlinkHARQ_FeedbackDisabled_r17, int harq_pid)
 {
-  if (downlinkHARQ_FeedbackDisabled_r17 == NULL)
+  // the bitmap covers the HARQ processes numbered by the DCIs only, not the one of MBS broadcast (NR_UE_BROADCAST_HARQ_PID)
+  if (downlinkHARQ_FeedbackDisabled_r17 == NULL || harq_pid >= downlinkHARQ_FeedbackDisabled_r17->size * 8)
     return 0;
 
   const int byte_index = harq_pid / 8;

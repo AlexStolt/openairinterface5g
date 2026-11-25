@@ -1448,11 +1448,11 @@ void broadcast_context_setup(const f1ap_broadcast_ctx_setup_t *req)
   nr_mbs_group_config_t config = {
       .config_id = 0,
       .mrb_id = req->mrb_id,
-      /* an MTCH LCID of its own, and four HARQ processes reserved for PTM.
-       * They belong in the F1AP message once TS 38.473 carries them. */
+      /* an MTCH LCID of its own. It belongs in the F1AP message once
+       * TS 38.473 carries it. No HARQ process is reserved: DCI format 4_0
+       * indicates none. */
       .lcid = mbs_free_lcid(mac, cell),
       .harq_feedback = NR_MBS_HARQ_FEEDBACK_DISABLED,
-      .num_harq = 4,
       .broadcast = true,
       /* From the configuration (mbs_broadcast_mcs): one value for the cell,
        * until a session brings its own requirements along. */
@@ -1460,9 +1460,10 @@ void broadcast_context_setup(const f1ap_broadcast_ctx_setup_t *req)
   };
   memcpy(config.tmgi, req->tmgi, sizeof(config.tmgi));
   const nr_mbs_group_t *group = config.lcid ? nr_mac_add_mbs_group(mac, cell, &config) : NULL;
-  /* Announce it: from here on any UE that reads SIB20 can receive the
-   * session, connected or not, and the gNB does not know which ones do. */
-  const bool announced = group != NULL && nr_mac_update_sib20(cell);
+  /* Announce it on the MCCH, from its next modification period on: any UE
+   * that reads it can receive the session, connected or not, and the gNB
+   * does not know which ones do. */
+  const bool announced = group != NULL && nr_mac_update_mcch(cell, true);
   NR_SCHED_UNLOCK(&mac->sched_lock);
   if (group == NULL) {
     LOG_E(NR_MAC, "MBS: could not create the group for MRB %ld\n", req->mrb_id);
@@ -1487,7 +1488,8 @@ void broadcast_context_setup(const f1ap_broadcast_ctx_setup_t *req)
 }
 
 /* Takes a broadcast session off the air: the group and its RLC entity go, and
- * SIB20 stops announcing it, which is how the receivers find out. */
+ * the MCCH stops announcing it from its next modification period on, which is
+ * how the receivers find out. */
 void broadcast_context_release(const f1ap_broadcast_ctx_release_t *req)
 {
   DevAssert(req != NULL);
@@ -1507,7 +1509,7 @@ void broadcast_context_release(const f1ap_broadcast_ctx_release_t *req)
   const int mrb_id = group->config.mrb_id;
   nr_cell_sched_t *cell = group->cell;
   nr_mac_release_mbs_group(mac, g_rnti);
-  nr_mac_update_sib20(cell);
+  nr_mac_update_mcch(cell, false);
   NR_SCHED_UNLOCK(&mac->sched_lock);
 
   /* the MRB was created here, so it goes here too */
@@ -1554,7 +1556,7 @@ void multicast_ue_join(const f1ap_multicast_ue_join_t *req)
         /* one mbs-RNTI-SpecificConfig per multicast session a UE may hold */
         .config_id = num_multicast,
         .mrb_id = req->mrb_id,
-        /* an MTCH LCID of its own, and four PTM HARQ processes, as for broadcast */
+        /* an MTCH LCID of its own, and four PTM HARQ processes */
         .lcid = mbs_free_lcid(mac, UE->pcell),
         .harq_feedback = NR_MBS_HARQ_FEEDBACK_ACK_NACK,
         .dci_4_2 = true,

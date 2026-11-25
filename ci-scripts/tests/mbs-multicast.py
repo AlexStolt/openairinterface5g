@@ -2,8 +2,8 @@
 
 """Check the first MBS multicast batch in the tutorial's three-UE Docker deployment.
 
-Use the broadcast tutorial's containers with the MBS_TEST adapter enabled instead
-of creating a core broadcast session. Wait for all three members to join and send
+Use the deployment of doc/MBS_Tutorial.md, whose gNB has the MBS_TEST adapter, before
+creating the broadcast session. Wait for all three members to join and send
 no warm-up traffic before running this script.
 """
 

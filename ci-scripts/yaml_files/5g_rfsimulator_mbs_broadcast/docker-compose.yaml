@@ -1,12 +1,13 @@
-# MBS broadcast over rfsimulator: one monolithic gNB, three UEs, and a core
-# that can create a broadcast session.
+# MBS broadcast and multicast over rfsimulator: one monolithic gNB, three UEs,
+# and a core that can create a broadcast session. The multicast group comes
+# from the test adapter in the gNB configuration (MBS_TEST).
 #
 # Monolithic on purpose. The MRB's PDCP PDUs have to reach the RLC entity
 # that transmits them, and nr_rlc_mrb_recv_sdu() only works when PDCP and RLC
 # are in the same process, so neither a CU/DU nor a CU-CP/CU-UP split can
 # carry this yet.
 #
-# See doc/MBS_Broadcast_Tutorial.md.
+# See doc/MBS_Tutorial.md.
 
 services:
 
@@ -30,7 +31,7 @@ services:
 
   # Open5GS with the 5G-MAG MBS network functions. Not an OAI image: the
   # upstream core has no MB-SMF, so it cannot allocate a TMGI or create a
-  # broadcast session. See doc/MBS_Broadcast_Tutorial.md for how to build it.
+  # broadcast session. See doc/MBS_Tutorial.md for how to build it.
   mbs-cn:
     container_name: mbs-cn
     image: ${CN_IMG:-open5gs_core:mbs}

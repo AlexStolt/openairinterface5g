@@ -147,8 +147,19 @@ void process_msg_rcc_to_mac(nr_mac_rrc_message_t *msg, int instance_id)
     } break;
     case NR_MAC_RRC_CONFIG_MBS_BROADCAST: {
       nr_mac_rrc_config_mbs_broadcast_t *bc = &msg->payload.config_mbs_broadcast;
-      nr_rrc_mac_config_mbs_broadcast(instance_id, bc->coreset, bc->num_sessions, bc->g_rnti, bc->lcid);
-      ASN_STRUCT_FREE(asn_DEF_NR_ControlResourceSet, bc->coreset);
+      nr_rrc_mac_config_mbs_broadcast(instance_id, bc->num_sessions, bc->g_rnti, bc->lcid);
+    } break;
+    case NR_MAC_RRC_CONFIG_MBS_MCCH: {
+      nr_mac_rrc_config_mbs_mcch_t *mcch = &msg->payload.config_mbs_mcch;
+      const nr_ue_mcch_config_t config = {
+          .repetition_period = mcch->repetition_period,
+          .repetition_offset = mcch->repetition_offset,
+          .window_start_slot = mcch->window_start_slot,
+          .window_duration = mcch->window_duration,
+          .modification_period = mcch->modification_period,
+      };
+      nr_rrc_mac_config_mbs_mcch(instance_id, mcch->coreset, &config);
+      ASN_STRUCT_FREE(asn_DEF_NR_ControlResourceSet, mcch->coreset);
     } break;
     case NR_MAC_RRC_START_RA:
       nr_rrc_mac_start_ra(instance_id, msg->payload.start_ra.cause);

@@ -1,10 +1,10 @@
 # SPDX-License-Identifier: LicenseRef-CSSL-1.0
 
-"""Check the first broadcast batch after following doc/MBS_Broadcast_Tutorial.md.
+"""Check the first broadcast batch after following doc/MBS_Tutorial.md.
 
 Start a fresh deployment, create the broadcast session and multicast route, and
 wait for all three UEs to announce the session before running this script. Do not
-send warm-up traffic: the regression occurs when PTM HARQ processes are first reused.
+send warm-up traffic: the check expects the session's first PTM transmissions.
 """
 
 import re

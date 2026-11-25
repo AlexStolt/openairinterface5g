@@ -33,6 +33,18 @@ void send_pcch_rrc(int ue_id, const uint8_t *sdu, sdu_size_t sdu_len, void *data
   itti_send_msg_to_task(TASK_RRC_NRUE, ue_id, message_p);
 }
 
+void send_mcch_rrc(int ue_id, const uint8_t *sdu, sdu_size_t sdu_len)
+{
+  if (sdu_len <= 0 || sdu_len > MCCH_SDU_SIZE) {
+    LOG_W(NR_MAC, "MCCH-Message of %d bytes dropped\n", sdu_len);
+    return;
+  }
+  MessageDef *message_p = itti_alloc_new_message(TASK_MAC_UE, 0, NR_RRC_MAC_MCCH_DATA_IND);
+  memcpy(NR_RRC_MAC_MCCH_DATA_IND(message_p).sdu, sdu, sdu_len);
+  NR_RRC_MAC_MCCH_DATA_IND(message_p).sdu_size = sdu_len;
+  itti_send_msg_to_task(TASK_RRC_NRUE, ue_id, message_p);
+}
+
 void nr_ue_init_mac_sl(NR_UE_MAC_INST_t *mac)
 {
   int k = 0;
@@ -256,7 +268,7 @@ void reset_mac_inst(NR_UE_MAC_INST_t *nr_mac)
   for (int c = 0; c < 2; c++) {
     // flush the soft buffers for all DL HARQ processes
     // for each DL HARQ process, consider the next received transmission for a TB as the very first transmission
-    for (int k = 0; k < NR_MAX_HARQ_PROCESSES; k++) {
+    for (int k = 0; k < NR_UE_MAX_DL_HARQ; k++) {
       memset(&nr_mac->dl_harq_info[k][c], 0, sizeof(NR_UE_DL_HARQ_STATUS_t));
       nr_mac->dl_harq_info[k][c].last_ndi = -1; // initialize to invalid value
     }

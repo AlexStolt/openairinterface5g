@@ -145,11 +145,11 @@ static void config_dci_pdu(NR_UE_MAC_INST_t *mac,
 
   int temp_num_dci_options = (mac->ra.ra_state == nrRA_WAIT_RAR || rnti_type == TYPE_SI_RNTI_) ? 1 : 2;
   int dci_format[2] = {0};
-  if (rnti_type == TYPE_G_RNTI_) {
-    // Type-3 CSS of pdcch-ConfigMulticast; broadcast uses its separate 4_1 search space
+  if (rnti_type == TYPE_G_RNTI_ || rnti_type == TYPE_MCCH_RNTI_) {
+    /* Type-3 CSS of pdcch-ConfigMulticast for multicast with DCI format 4_1 or 4_2, else searchSpaceMTCH or searchSpaceMCCH
+     * for broadcast with DCI format 4_0 (TS 38.212 Table 7.3.1-1) */
     temp_num_dci_options = 1;
-    dci_format[0] = ss == mac->mbs.search_space && mac->mbs.dci_format == NR_DL_DCI_FORMAT_4_2
-                        ? NR_DL_DCI_FORMAT_4_2 : NR_DL_DCI_FORMAT_4_1;
+    dci_format[0] = ss == mac->mbs.search_space ? mac->mbs.dci_format : NR_DL_DCI_FORMAT_4_0;
   } else if (ss->searchSpaceType->present == NR_SearchSpace__searchSpaceType_PR_ue_Specific) {
     if (ss->searchSpaceType->choice.ue_Specific->dci_Formats ==
         NR_SearchSpace__searchSpaceType__ue_Specific__dci_Formats_formats0_0_And_1_0) {
@@ -160,8 +160,7 @@ static void config_dci_pdu(NR_UE_MAC_INST_t *mac,
       dci_format[0] = NR_DL_DCI_FORMAT_1_1;
       dci_format[1] = NR_UL_DCI_FORMAT_0_1;
     }
-  }
-  else { // common
+  } else { // common
     AssertFatal(ss->searchSpaceType->choice.common->dci_Format0_0_AndFormat1_0,
                 "Only supporting format 10 and 00 for common SS\n");
     dci_format[0] = NR_DL_DCI_FORMAT_1_0;
@@ -182,6 +181,8 @@ static void config_dci_pdu(NR_UE_MAC_INST_t *mac,
     rel15->ss_type_options[i] = ss->searchSpaceType->present;
     if (dci_format[i] == NR_DL_DCI_FORMAT_1_0 || dci_format[i] == NR_UL_DCI_FORMAT_0_0)
       rel15->dci_format_options[i] = NFAPI_NR_FORMAT_0_0_AND_1_0;
+    else if (dci_format[i] == NR_DL_DCI_FORMAT_4_0)
+      rel15->dci_format_options[i] = NFAPI_NR_FORMAT_4_0;
     else if (dci_format[i] == NR_DL_DCI_FORMAT_4_1)
       rel15->dci_format_options[i] = NFAPI_NR_FORMAT_4_1;
     else if (dci_format[i] == NR_DL_DCI_FORMAT_4_2)
@@ -311,6 +312,11 @@ static void config_dci_pdu(NR_UE_MAC_INST_t *mac,
       sps = current_DL_BWP->cyclicprefix ? 12 : 14;
       rel15->SubcarrierSpacing = current_DL_BWP->scs;
       break;
+    case TYPE_MCCH_RNTI_:
+      sps = current_DL_BWP->cyclicprefix ? 12 : 14;
+      rel15->rnti = MCCH_RNTI;
+      rel15->SubcarrierSpacing = current_DL_BWP->scs;
+      break;
     default:
       break;
   }
@@ -359,16 +365,16 @@ static void config_dci_pdu_g_rnti(NR_UE_MAC_INST_t *mac,
     dl_config->dl_config_list[pdu_idx].dci_config_pdu.dci_config_rel15.rnti = g_rnti;
 }
 
-/* searchSpaceMTCH of the initial BWP, once the CORESET it refers to has been read from SIB20; NULL if the UE cannot
- * receive broadcast sessions now */
-static const NR_SearchSpace_t *get_mtch_search_space(const NR_UE_MAC_INST_t *mac)
+/* searchSpaceMTCH or searchSpaceMCCH (ss_id) of the initial BWP, once the CORESET it refers to has been read from SIB20;
+ * NULL if the UE cannot receive broadcast sessions now. Search space zero, i.e., the occasions of SIB1, is not supported */
+static const NR_SearchSpace_t *get_mbs_broadcast_search_space(const NR_UE_MAC_INST_t *mac, long ss_id)
 {
   const NR_BWP_PDCCH_t *pdcch = &mac->config_BWP_PDCCH[0];
-  if (!mac->current_DL_BWP || mac->current_DL_BWP->bwp_id != 0 || pdcch->mtch_SS_id <= 0)
+  if (!mac->current_DL_BWP || mac->current_DL_BWP->bwp_id != 0 || ss_id <= 0)
     return NULL;
   const NR_SearchSpace_t *ss = NULL;
   for (int i = 0; i < pdcch->list_common_SS.count && !ss; i++) {
-    if (pdcch->list_common_SS.array[i]->searchSpaceId == pdcch->mtch_SS_id)
+    if (pdcch->list_common_SS.array[i]->searchSpaceId == ss_id)
       ss = pdcch->list_common_SS.array[i];
   }
   if (!ss || !ss->controlResourceSetId)
@@ -622,10 +628,16 @@ void ue_dci_configuration(NR_UE_MAC_INST_t *mac, fapi_nr_dl_config_request_t *dl
       config_dci_pdu(mac, dl_config, TYPE_SI_RNTI_, slot, ss);
     }
   }
-  /* MBS broadcast (TS 38.300 §16.10.6): the PDCCHs of the sessions announced in the cell are monitored in the MTCH
-   * search space of the initial BWP, connected or not. INTERIM: for DCI format 4_1, where TS 38.213 §18 has 4_0 */
+  /* MBS broadcast (TS 38.300 §16.10.6), connected or not: the MCCH in its transmission windows, in the MCCH search space
+   * (TS 38.331 §5.9.1.2), and the sessions it announced in the MTCH search space, all with DCI format 4_0. The PDCCHs of
+   * the MCCH are monitored in every window for their change notification, even when the MCCH is not acquired again */
   if (mac->state == UE_CONNECTED || mac->state == UE_IDLE) {
-    const NR_SearchSpace_t *mtch_ss = get_mtch_search_space(mac);
+    const nr_ue_mcch_config_t *mcch = &mac->mbs.mcch;
+    const NR_SearchSpace_t *mcch_ss = mcch->configured ? get_mbs_broadcast_search_space(mac, pdcch_config->mcch_SS_id) : NULL;
+    if (mcch_ss && frame % mcch->repetition_period == mcch->repetition_offset && slot >= mcch->window_start_slot
+        && slot < mcch->window_start_slot + mcch->window_duration && is_ss_monitor_occasion(frame, slot, slots_per_frame, mcch_ss))
+      config_dci_pdu(mac, dl_config, TYPE_MCCH_RNTI_, slot, mcch_ss);
+    const NR_SearchSpace_t *mtch_ss = get_mbs_broadcast_search_space(mac, pdcch_config->mtch_SS_id);
     if (mtch_ss && is_ss_monitor_occasion(frame, slot, slots_per_frame, mtch_ss)) {
       for (int i = 0; i < mac->mbs.num_g_rnti; i++) {
         if (mac->mbs.broadcast[i])

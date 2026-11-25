@@ -465,13 +465,21 @@ typedef struct {
 typedef struct {
   int get_sib;
 } nr_mac_rrc_sched_sib_t;
-/// MBS broadcast sessions announced in the cell, with the CORESET of their PDCCHs (SIB20, MBSBroadcastConfiguration)
+/// MBS broadcast sessions announced on the MCCH (MBSBroadcastConfiguration)
 typedef struct {
-  NR_ControlResourceSet_t *coreset;
   int num_sessions;
   uint16_t g_rnti[16];
   int lcid[16];
 } nr_mac_rrc_config_mbs_broadcast_t;
+/// MCCH of the cell and CORESET of the CFR of the MCCH and the MTCHs (SIB20), in radio frames and slots
+typedef struct {
+  NR_ControlResourceSet_t *coreset;
+  int repetition_period;
+  int repetition_offset;
+  int window_start_slot;
+  int window_duration;
+  int modification_period;
+} nr_mac_rrc_config_mbs_mcch_t;
 
 typedef struct {
   nr_mac_ra_start_cause_t cause;
@@ -484,6 +492,7 @@ enum payload_type {
   NR_MAC_RRC_CONFIG_SIB1,
   NR_MAC_RRC_CONFIG_OTHER_SIB,
   NR_MAC_RRC_CONFIG_MBS_BROADCAST,
+  NR_MAC_RRC_CONFIG_MBS_MCCH,
   NR_MAC_RRC_START_RA,
   NR_MAC_RRC_SCHED_SIB,
   NR_MAC_RRC_RESUME_RB
@@ -499,6 +508,7 @@ typedef struct {
     nr_mac_rrc_sched_sib_t sched_sib;
     nr_mac_rrc_config_other_sib_t config_other_sib;
     nr_mac_rrc_config_mbs_broadcast_t config_mbs_broadcast;
+    nr_mac_rrc_config_mbs_mcch_t config_mbs_mcch;
     nr_mac_rrc_start_ra_t start_ra;
     nr_mac_rrc_resume_rb_t resume_rb;
   } payload;

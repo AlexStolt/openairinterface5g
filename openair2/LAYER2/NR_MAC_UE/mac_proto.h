@@ -46,6 +46,8 @@ NR_UE_UL_BWP_t *get_ul_bwp_structure(NR_UE_MAC_INST_t *mac, int bwp_id, bool set
 
 void send_srb0_rrc(int ue_id, const uint8_t *sdu, sdu_size_t sdu_len, void *data);
 void send_pcch_rrc(int ue_id, const uint8_t *sdu, sdu_size_t sdu_len, void *data);
+void send_mcch_rrc(int ue_id, const uint8_t *sdu, sdu_size_t sdu_len);
+void nr_ue_process_mcch(NR_UE_MAC_INST_t *mac, frame_t frame, uint8_t *pdu, int pdu_len);
 void update_mac_ul_timers(NR_UE_MAC_INST_t *mac);
 void update_mac_dl_timers(NR_UE_MAC_INST_t *mac);
 NR_LC_SCHEDULING_INFO *get_scheduling_info_from_lcid(NR_UE_MAC_INST_t *mac, NR_LogicalChannelIdentity_t lcid);
@@ -91,11 +93,8 @@ void nr_rrc_mac_start_ra(module_id_t module_id, nr_mac_ra_start_cause_t cause);
 
 struct position; /* forward declaration */
 void nr_rrc_mac_config_other_sib(module_id_t module_id, NR_SIB19_r17_t *sib19_r17, int hfn, int frame, bool can_start_ra);
-void nr_rrc_mac_config_mbs_broadcast(module_id_t module_id,
-                                     NR_ControlResourceSet_t *coreset,
-                                     int num_sessions,
-                                     const uint16_t g_rnti[],
-                                     const int lcid[]);
+void nr_rrc_mac_config_mbs_broadcast(module_id_t module_id, int num_sessions, const uint16_t g_rnti[], const int lcid[]);
+void nr_rrc_mac_config_mbs_mcch(module_id_t module_id, NR_ControlResourceSet_t *coreset, const nr_ue_mcch_config_t *mcch);
 void nr_ue_mbs_release_g_rnti(NR_UE_MAC_INST_t *mac, bool broadcast);
 void nr_rrc_mac_resume_rb(module_id_t module_id, bool is_srb, int rb_id);
 void nr_rrc_mac_config_req_reset(module_id_t module_id, NR_UE_MAC_reset_cause_t cause);

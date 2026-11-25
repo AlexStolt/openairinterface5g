@@ -458,8 +458,10 @@ static int collect_dl_candidates(nr_cell_sched_t *cell,
 
     NR_UE_sched_ctrl_t *sched_ctrl = &UE->UE_sched_ctrl;
     NR_UE_DL_BWP_t *current_BWP = &UE->current_DL_BWP;
-    /* TS 38.214 §5.1: one PDSCH per slot, a PTM PDSCH of the groups of the UE is scheduled in this slot */
-    if (sched_ctrl->ptm_dl_harq_mask && sched_ctrl->ptm_pdsch_frame == frame && sched_ctrl->ptm_pdsch_slot == slot)
+    /* TS 38.214 §5.1: one PDSCH per slot, a PTM PDSCH of the groups of the UE, or of a broadcast session the UE may be
+     * receiving, is scheduled in this slot */
+    if (cell->mbs_broadcast_in_slot
+        || (sched_ctrl->ptm_dl_harq_mask && sched_ctrl->ptm_pdsch_frame == frame && sched_ctrl->ptm_pdsch_slot == slot))
       continue;
 
     /* Check TA */

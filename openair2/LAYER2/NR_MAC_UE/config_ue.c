@@ -764,6 +764,7 @@ static void release_common_ss_cset(NR_BWP_PDCCH_t *pdcch)
   pdcch->ra_SS_id = -1;
   pdcch->paging_SS_id = -1;
   pdcch->mtch_SS_id = -1;
+  pdcch->mcch_SS_id = -1;
   asn_sequence_empty(&pdcch->list_common_SS);
   asn1cFreeStruc(asn_DEF_NR_ControlResourceSet, pdcch->commonControlResourceSet);
 }
@@ -842,8 +843,11 @@ static void configure_common_ss_coreset(NR_BWP_PDCCH_t *pdcch, NR_PDCCH_ConfigCo
   ASIGN_P_VAL(pdcch->ra_SS_id, pdcch_ConfigCommon->ra_SearchSpace);
   ASIGN_P_VAL(pdcch->paging_SS_id, pdcch_ConfigCommon->pagingSearchSpace);
   pdcch->mtch_SS_id = -1;
-  if (pdcch_ConfigCommon->ext3)
+  pdcch->mcch_SS_id = -1;
+  if (pdcch_ConfigCommon->ext3) {
     ASIGN_P_VAL(pdcch->mtch_SS_id, pdcch_ConfigCommon->ext3->searchSpaceMTCH_r17);
+    ASIGN_P_VAL(pdcch->mcch_SS_id, pdcch_ConfigCommon->ext3->searchSpaceMCCH_r17);
+  }
 
   UPDATE_IE(pdcch->commonControlResourceSet, pdcch_ConfigCommon->commonControlResourceSet, NR_ControlResourceSet_t);
 }
@@ -2392,14 +2396,9 @@ void nr_ue_mbs_release_g_rnti(NR_UE_MAC_INST_t *mac, bool broadcast)
   mac->mbs.num_g_rnti = n;
 }
 
-/* MBS broadcast (TS 38.300 §16.10.6): the sessions announced in the cell replace the ones known so far. Their PDCCHs are
- * in the CORESET given with them, monitored in the MTCH search space of the initial BWP; nothing is reported for them
- * (TS 38.213 §18) */
-void nr_rrc_mac_config_mbs_broadcast(module_id_t module_id,
-                                     NR_ControlResourceSet_t *coreset,
-                                     int num_sessions,
-                                     const uint16_t g_rnti[],
-                                     const int lcid[])
+/* MBS broadcast (TS 38.331 §5.9.1): SIB20 gives the CORESET of the CFR of the MCCH and the MTCHs, and where the MCCH is.
+ * The MCCH is acquired again, as SIB20 is read in a new cell (TS 38.331 §5.9.2.3) */
+void nr_rrc_mac_config_mbs_mcch(module_id_t module_id, NR_ControlResourceSet_t *coreset, const nr_ue_mcch_config_t *mcch)
 {
   NR_UE_MAC_INST_t *mac = get_mac_inst(module_id);
   int ret = pthread_mutex_lock(&mac->if_mutex);
@@ -2412,6 +2411,22 @@ void nr_rrc_mac_config_mbs_broadcast(module_id_t module_id,
     configure_ss_coreset(&mac->config_BWP_PDCCH[0], &coresets);
     asn_sequence_empty(&list.list);
   }
+  mac->mbs.mcch = *mcch;
+  mac->mbs.mcch.configured = true;
+  mac->mbs.mcch_valid = false;
+
+  ret = pthread_mutex_unlock(&mac->if_mutex);
+  AssertFatal(!ret, "mutex failed %d\n", ret);
+}
+
+/* MBS broadcast (TS 38.300 §16.10.6): the sessions announced on the MCCH replace the ones known so far. Their PDCCHs are
+ * in the CORESET of SIB20, monitored in the MTCH search space of the initial BWP; nothing is reported for them
+ * (TS 38.213 §18) */
+void nr_rrc_mac_config_mbs_broadcast(module_id_t module_id, int num_sessions, const uint16_t g_rnti[], const int lcid[])
+{
+  NR_UE_MAC_INST_t *mac = get_mac_inst(module_id);
+  int ret = pthread_mutex_lock(&mac->if_mutex);
+  AssertFatal(!ret, "mutex failed %d\n", ret);
 
   nr_ue_mbs_release_g_rnti(mac, true);
   mac->mbs.broadcast_mtch_lcids = 0;

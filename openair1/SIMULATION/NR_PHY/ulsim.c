@@ -93,6 +93,7 @@ THREAD_STRUCT thread_struct;
  * here as well, only provide a prototype (and abort if they are ever called). */
 
 void e1_bc_bearer_context_setup(const e1ap_bc_bearer_setup_req_t *req) { abort(); }
+void e1_bc_bearer_context_release(uint32_t gNB_cu_cp_mbs_e1ap_id) { abort(); }
 void e1_bearer_context_setup(const e1ap_bearer_setup_req_t *req) { abort(); }
 void e1_bearer_context_modif(const e1ap_bearer_mod_req_t *req) { abort(); }
 void e1_bearer_context_mod_confirm(const e1ap_bearer_mod_confirm_t *conf) { abort(); }

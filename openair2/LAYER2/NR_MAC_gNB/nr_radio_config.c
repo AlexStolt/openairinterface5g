@@ -31,6 +31,8 @@
 #include "NR_MBS-SessionInfo-r17.h"
 #include "NR_MRB-InfoBroadcast-r17.h"
 #include "NR_CFR-ConfigMCCH-MTCH-r17.h"
+#include "NR_LocationAndBandwidthBroadcast-r17.h"
+#include "NR_MCCH-Message-r17.h"
 #include "uper_decoder.h"
 #include "uper_encoder.h"
 #include "utils.h"
@@ -3169,54 +3171,62 @@ static NR_MBSBroadcastConfiguration_r17_t *get_mbs_broadcast_config(int num_sess
   return cfg;
 }
 
-/* SIB20 (TS 38.331 §6.3.1): says where the MCCH is, and gives the CORESET the broadcast PDCCHs are sent in.
- *
- * INTERIM: there is no MCCH yet, so the message that belongs on it -- MBSBroadcastConfiguration, the list of sessions --
- * is carried in the lateNonCriticalExtension of SIB20 instead, and the UE reads SIB20 again periodically to follow it.
- * The message is the real one, so only its transport changes when the MCCH exists; the mcch-Config below is valid but
- * describes a channel that is not transmitted */
-NR_SIB20_r17_t *get_SIB20_NR(const NR_ControlResourceSet_t *coreset,
-                             int num_sessions,
-                             const nr_mbs_broadcast_session_t sessions[num_sessions])
+/* SIB20 (TS 38.331 §6.3.1): says where the MCCH is (TS 38.331 §5.9.1.2), and gives the CORESET of the CFR the MCCH and
+ * the MTCHs are sent in. The sessions are on the MCCH, so SIB20 does not change with them */
+NR_SIB20_r17_t *get_SIB20_NR(const NR_ControlResourceSet_t *coreset)
 {
   NR_SIB20_r17_t *sib20 = calloc_or_fail(1, sizeof(*sib20));
   NR_MCCH_Config_r17_t *mcch = &sib20->mcch_Config_r17;
-  mcch->mcch_RepetitionPeriodAndOffset_r17.present = NR_MCCH_RepetitionPeriodAndOffset_r17_PR_rf32_r17;
-  mcch->mcch_RepetitionPeriodAndOffset_r17.choice.rf32_r17 = 0;
-  mcch->mcch_WindowStartSlot_r17 = 0;
-  mcch->mcch_ModificationPeriod_r17 = NR_MCCH_Config_r17__mcch_ModificationPeriod_r17_rf32;
+  _Static_assert(NR_MCCH_REPETITION_PERIOD_RF == 16, "mcch-RepetitionPeriodAndOffset below");
+  mcch->mcch_RepetitionPeriodAndOffset_r17.present = NR_MCCH_RepetitionPeriodAndOffset_r17_PR_rf16_r17;
+  mcch->mcch_RepetitionPeriodAndOffset_r17.choice.rf16_r17 = NR_MCCH_REPETITION_OFFSET_RF;
+  mcch->mcch_WindowStartSlot_r17 = NR_MCCH_WINDOW_START_SLOT;
+  _Static_assert(NR_MCCH_WINDOW_DURATION_SLOTS == 10, "mcch-WindowDuration below");
+  asn1cCallocOne(mcch->mcch_WindowDuration_r17, NR_MCCH_Config_r17__mcch_WindowDuration_r17_sl10);
+  _Static_assert(NR_MCCH_MODIFICATION_PERIOD_RF == 64, "mcch-ModificationPeriod below");
+  mcch->mcch_ModificationPeriod_r17 = NR_MCCH_Config_r17__mcch_ModificationPeriod_r17_rf64;
 
+  /* the CFR is the initial DL BWP; without locationAndBandwidthBroadcast it would be CORESET#0 (TS 38.331 §6.3.2
+   * CFR-ConfigMCCH-MTCH) */
   sib20->cfr_ConfigMCCH_MTCH_r17 = calloc_or_fail(1, sizeof(*sib20->cfr_ConfigMCCH_MTCH_r17));
-  const int copy_result = asn_copy(&asn_DEF_NR_ControlResourceSet,
-                                   (void **)&sib20->cfr_ConfigMCCH_MTCH_r17->commonControlResourceSetExt_r17,
-                                   coreset);
+  NR_CFR_ConfigMCCH_MTCH_r17_t *cfr = sib20->cfr_ConfigMCCH_MTCH_r17;
+  cfr->locationAndBandwidthBroadcast_r17 = calloc_or_fail(1, sizeof(*cfr->locationAndBandwidthBroadcast_r17));
+  cfr->locationAndBandwidthBroadcast_r17->present = NR_LocationAndBandwidthBroadcast_r17_PR_sameAsSib1ConfiguredLocationAndBW;
+  const int copy_result = asn_copy(&asn_DEF_NR_ControlResourceSet, (void **)&cfr->commonControlResourceSetExt_r17, coreset);
   AssertFatal(copy_result == 0, "unable to copy the MBS CORESET into SIB20\n");
-
-  NR_MBSBroadcastConfiguration_r17_t *cfg = get_mbs_broadcast_config(num_sessions, sessions);
-  uint8_t buf[1024];
-  asn_enc_rval_t enc = uper_encode_to_buffer(&asn_DEF_NR_MBSBroadcastConfiguration_r17, NULL, cfg, buf, sizeof(buf));
-  AssertFatal(enc.encoded > 0, "could not encode MBSBroadcastConfiguration (failed at %s)\n", enc.failed_type ? enc.failed_type->name : "?");
-  sib20->lateNonCriticalExtension = calloc_or_fail(1, sizeof(*sib20->lateNonCriticalExtension));
-  OCTET_STRING_fromBuf(sib20->lateNonCriticalExtension, (const char *)buf, (enc.encoded + 7) / 8);
-  ASN_STRUCT_FREE(asn_DEF_NR_MBSBroadcastConfiguration_r17, cfg);
   return sib20;
 }
 
-/* The search space of the broadcast PDCCHs belongs to the common configuration of the initial BWP, where
- * searchSpaceMTCH points at it (TS 38.331 §6.3.2 PDCCH-ConfigCommon). Its CORESET is the one of SIB20 */
-void add_SIB1_mtch_search_space(NR_BCCH_DL_SCH_Message_t *sib1_bcch, const NR_SearchSpace_t *ss)
+/* MCCH-Message (TS 38.331 §6.2.1) carrying the MBSBroadcastConfiguration of the cell
+ * @return the encoded size in bytes */
+int encode_MCCH_message_NR(int num_sessions, const nr_mbs_broadcast_session_t sessions[num_sessions], uint8_t *buf, int buf_size)
+{
+  NR_MCCH_Message_r17_t msg = {.message.present = NR_MCCH_MessageType_r17_PR_c1};
+  msg.message.choice.c1 = calloc_or_fail(1, sizeof(*msg.message.choice.c1));
+  msg.message.choice.c1->present = NR_MCCH_MessageType_r17__c1_PR_mbsBroadcastConfiguration_r17;
+  msg.message.choice.c1->choice.mbsBroadcastConfiguration_r17 = get_mbs_broadcast_config(num_sessions, sessions);
+  asn_enc_rval_t enc = uper_encode_to_buffer(&asn_DEF_NR_MCCH_Message_r17, NULL, &msg, buf, buf_size);
+  AssertFatal(enc.encoded > 0, "could not encode MCCH-Message (failed at %s)\n", enc.failed_type ? enc.failed_type->name : "?");
+  ASN_STRUCT_FREE_CONTENTS_ONLY(asn_DEF_NR_MCCH_Message_r17, &msg);
+  return (enc.encoded + 7) / 8;
+}
+
+/* The search space of the broadcast PDCCHs belongs to the common configuration of the initial BWP, where searchSpaceMCCH
+ * and searchSpaceMTCH point at it (TS 38.331 §6.3.2 PDCCH-ConfigCommon). Its CORESET is the one of SIB20 */
+void add_SIB1_mbs_search_space(NR_BCCH_DL_SCH_Message_t *sib1_bcch, const NR_SearchSpace_t *ss)
 {
   NR_SIB1_t *sib1 = sib1_bcch->message.choice.c1->choice.systemInformationBlockType1;
   NR_PDCCH_ConfigCommon_t *pdcch = sib1->servingCellConfigCommon->downlinkConfigCommon.initialDownlinkBWP.pdcch_ConfigCommon->choice.setup;
   if (pdcch->ext3 && pdcch->ext3->searchSpaceMTCH_r17)
     return;
-  AssertFatal(pdcch->commonSearchSpaceList->list.count < 4, "no room for the MTCH search space in commonSearchSpaceList\n");
+  AssertFatal(pdcch->commonSearchSpaceList->list.count < 4, "no room for the MBS search space in commonSearchSpaceList\n");
   NR_SearchSpace_t *ss_copy = NULL;
   const int copy_result = asn_copy(&asn_DEF_NR_SearchSpace, (void **)&ss_copy, ss);
   AssertFatal(copy_result == 0, "unable to copy the MBS search space into SIB1\n");
   asn1cSeqAdd(&pdcch->commonSearchSpaceList->list, ss_copy);
   if (!pdcch->ext3)
     pdcch->ext3 = calloc_or_fail(1, sizeof(*pdcch->ext3));
+  asn1cCallocOne(pdcch->ext3->searchSpaceMCCH_r17, ss->searchSpaceId);
   asn1cCallocOne(pdcch->ext3->searchSpaceMTCH_r17, ss->searchSpaceId);
 }
 
@@ -3920,15 +3930,18 @@ NR_ControlResourceSet_t *get_mbs_coreset_config(const NR_ServingCellConfigCommon
   return coreset;
 }
 
-NR_SearchSpace_t *get_mbs_search_space_config(const NR_ControlResourceSet_t *coreset, const nr_mac_config_t *configuration)
+NR_SearchSpace_t *get_mbs_search_space_config(const NR_ControlResourceSet_t *coreset,
+                                              const nr_mac_config_t *configuration,
+                                              int search_space_id)
 {
-  /* Type-3 CSS of pdcch-ConfigMulticast (TS 38.213 §10.1). The selected MBS format is indicated by
-   * searchSpaceType-r17 of searchSpacesToAddModListExt-v1700, hence no Rel-15 DCI format here */
+  /* Type-3 CSS of pdcch-ConfigMulticast (TS 38.213 §10.1), whose MBS format is indicated by searchSpaceType-r17 of
+   * searchSpacesToAddModListExt-v1700, or CSS of searchSpaceMTCH, for DCI format 4_0 (TS 38.212 Table 7.3.1-1): no
+   * Rel-15 DCI format in either */
   int num_agg_level_candidates[NUM_PDCCH_AGG_LEVELS];
   const int num_cces = get_coreset_num_cces(coreset->frequencyDomainResources.buf, coreset->duration);
   verify_agg_levels(num_cces, configuration->num_agg_level_candidates, coreset->controlResourceSetId, num_agg_level_candidates);
   const int cset_id = coreset->controlResourceSetId;
-  NR_SearchSpace_t *ss = rrc_searchspace_config(true, NR_MBS_SEARCH_SPACE_ID, cset_id, num_agg_level_candidates);
+  NR_SearchSpace_t *ss = rrc_searchspace_config(true, search_space_id, cset_id, num_agg_level_candidates);
   free_and_zero(ss->searchSpaceType->choice.common->dci_Format0_0_AndFormat1_0);
   return ss;
 }

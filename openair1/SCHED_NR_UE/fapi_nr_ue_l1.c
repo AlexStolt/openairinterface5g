@@ -17,7 +17,7 @@
 #include "utils.h"
 #include "SCHED_NR_UE/phy_sch_processing_time.h"
 
-const char *const dl_pdu_type[] = {"DCI", "DLSCH", "RA_DLSCH", "SI_DLSCH", "P_DLSCH", "CSI_RS", "CSI_IM", "TA"};
+const char *const dl_pdu_type[] = {"DCI", "DLSCH", "RA_DLSCH", "SI_DLSCH", "P_DLSCH", "CSI_RS", "CSI_IM", "TA", "MCCH_DLSCH"};
 const char *const ul_pdu_type[] = {"PRACH", "PUCCH", "PUSCH", "SRS"};
 
 static void configure_dlsch(NR_UE_DLSCH_t *dlsch,
@@ -171,7 +171,8 @@ static void nr_ue_scheduled_response_dl(NR_UE_MAC_INST_t *mac,
       case FAPI_NR_DL_CONFIG_TYPE_RA_DLSCH:
       case FAPI_NR_DL_CONFIG_TYPE_SI_DLSCH:
       case FAPI_NR_DL_CONFIG_TYPE_DLSCH:
-      case FAPI_NR_DL_CONFIG_TYPE_P_DLSCH: {
+      case FAPI_NR_DL_CONFIG_TYPE_P_DLSCH:
+      case FAPI_NR_DL_CONFIG_TYPE_MCCH_DLSCH: {
         fapi_nr_dl_config_dlsch_pdu_rel15_t *dlsch_config_pdu = &pdu->dlsch_config_pdu.dlsch_config_rel15;
         phy_data->n_dlsch_codewords = dlsch_config_pdu->n_codewords;
         phy_data->dlsch_config = *dlsch_config_pdu;
@@ -192,6 +193,9 @@ static void nr_ue_scheduled_response_dl(NR_UE_MAC_INST_t *mac,
           case FAPI_NR_DL_CONFIG_TYPE_P_DLSCH:
             rnti_type = TYPE_P_RNTI_;
             n_codewords = dlsch_config_pdu->n_codewords;
+            break;
+          case FAPI_NR_DL_CONFIG_TYPE_MCCH_DLSCH:
+            rnti_type = TYPE_MCCH_RNTI_;
             break;
           default:
             AssertFatal(false, "Unexpected DL DLSCH-family pdu_type %d\n", pdu->pdu_type);

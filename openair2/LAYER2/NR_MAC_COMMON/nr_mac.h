@@ -286,6 +286,13 @@ typedef struct {
 #define NR_MAX_G_RNTI 16
 /* TS 38.212 §7.3.1.5.2: trailing reserved bits of DCI format 4_1 */
 #define NR_DCI_FORMAT_4_1_RESERVED_BITS 3
+/* TS 38.212 §7.3.1.5.1: trailing bits of DCI format 4_0, MCCH change notification (2, reserved with G-RNTI) and reserved
+ * bits (14) */
+#define NR_DCI_FORMAT_4_0_RESERVED_BITS 16
+#define NR_DCI_FORMAT_4_0_MCCH_CHANGE_NOTIFICATION_BITS 2
+/* TS 38.212 §7.3.1.5.1: the bits of the MCCH change notification */
+#define NR_MCCH_CHANGE_NEW_SERVICE 0x2
+#define NR_MCCH_CHANGE_OTHER 0x1
 
 // DCI pdu structures. Used by both gNB and UE.
 typedef struct {
@@ -306,6 +313,8 @@ typedef struct {
   uint8_t     tpc; //2 bits
   uint8_t     short_messages_indicator; //2 bits
   uint8_t     short_messages; //8 bits
+  /// DCI format 4_0 with MCCH-RNTI (TS 38.212 §7.3.1.5.1): MSB start of new MBS services, LSB other MCCH change
+  uint8_t mcch_change_notification; // 2 bits
   uint8_t     tb_scaling; //2 bits
   uint8_t     pucch_resource_indicator; //3 bits
   uint8_t     system_info_indicator; //1 bit
@@ -421,6 +430,7 @@ typedef enum {
   NR_UL_DCI_FORMAT_0_1,
   NR_DL_DCI_FORMAT_4_1,
   NR_DL_DCI_FORMAT_4_2,
+  NR_DL_DCI_FORMAT_4_0,
   NR_DCI_NONE
 } nr_dci_format_t;
 

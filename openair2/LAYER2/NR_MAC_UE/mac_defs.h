@@ -708,6 +708,8 @@ typedef struct {
   long paging_SS_id;
   /// searchSpaceMTCH of PDCCH-ConfigCommon, for the PDCCHs of MBS broadcast sessions; -1 if absent
   long mtch_SS_id;
+  /// searchSpaceMCCH of PDCCH-ConfigCommon, for the PDCCHs of the MCCH; -1 if absent
+  long mcch_SS_id;
   NR_ControlResourceSet_t *commonControlResourceSet;
   A_SEQUENCE_OF(NR_ControlResourceSet_t) list_Coreset;
   A_SEQUENCE_OF(NR_SearchSpace_t) list_common_SS;
@@ -783,6 +785,16 @@ typedef struct {
 } nr_ue_paging_cfg_t;
 
 /*!\brief Top level UE MAC structure */
+/// MCCH-Config of SIB20 (TS 38.331 §5.9.1.2), in radio frames and slots
+typedef struct {
+  bool configured;
+  int repetition_period;
+  int repetition_offset;
+  int window_start_slot;
+  int window_duration;
+  int modification_period;
+} nr_ue_mcch_config_t;
+
 typedef struct NR_UE_MAC_INST_s {
   module_id_t ue_id;
   NR_UE_L2_STATE_t state;
@@ -871,7 +883,7 @@ typedef struct NR_UE_MAC_INST_s {
   dci_pdu_rel15_t def_dci_pdu_rel15[NR_MAX_SLOTS_PER_FRAME][NR_DCI_NONE];
 
   // Defined for abstracted mode
-  NR_UE_DL_HARQ_STATUS_t dl_harq_info[NR_MAX_HARQ_PROCESSES][2]; // one harq process for each codeword
+  NR_UE_DL_HARQ_STATUS_t dl_harq_info[NR_UE_MAX_DL_HARQ][2]; // one harq process for each codeword
   NR_UE_UL_HARQ_INFO_t ul_harq_info[NR_MAX_HARQ_PROCESSES];
   NR_UE_SL_RX_HARQ_INFO_t sl_rx_harq_info[NR_MAX_HARQ_PROCESSES];
 
@@ -952,6 +964,11 @@ typedef struct NR_UE_MAC_INST_s {
     uint64_t broadcast_mtch_lcids;
     /// PTM transport blocks received on a G-RNTI
     uint64_t rx_tb;
+    nr_ue_mcch_config_t mcch;
+    /// the MCCH was acquired, and no change was notified since: it is not read again (TS 38.331 §5.9.2.3)
+    bool mcch_valid;
+    /// SFN / modification period of the modification period the MCCH was acquired in
+    int mcch_period;
   } mbs;
 } NR_UE_MAC_INST_t;
 

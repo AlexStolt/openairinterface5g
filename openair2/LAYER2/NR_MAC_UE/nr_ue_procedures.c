@@ -131,6 +131,15 @@ bool nr_ue_is_g_rnti(const NR_UE_MAC_INST_t *mac, rnti_t rnti)
   return false;
 }
 
+static bool nr_ue_is_broadcast_g_rnti(const NR_UE_MAC_INST_t *mac, rnti_t rnti)
+{
+  for (int i = 0; i < mac->mbs.num_g_rnti; i++) {
+    if (mac->mbs.g_rnti[i] == rnti)
+      return mac->mbs.broadcast[i];
+  }
+  return false;
+}
+
 static bool nr_ue_g_rnti_harq_feedback(const NR_UE_MAC_INST_t *mac, rnti_t g_rnti)
 {
   for (int i = 0; i < mac->mbs.num_g_rnti; i++) {
@@ -155,6 +164,8 @@ int get_rnti_type(const NR_UE_MAC_INST_t *mac, const uint16_t rnti)
     rnti_type = TYPE_C_RNTI_;
   } else if (nr_ue_is_g_rnti(mac, rnti)) {
     rnti_type = TYPE_G_RNTI_;
+  } else if (rnti == MCCH_RNTI && mac->mbs.mcch.configured) {
+    rnti_type = TYPE_MCCH_RNTI_;
   } else if (rnti == 0xFFFE) {
     rnti_type = TYPE_P_RNTI_;
   } else if (rnti == 0xFFFF) {
@@ -753,7 +764,8 @@ static bool get_cw_info(NR_UE_DL_HARQ_STATUS_t *current_harq,
   cw_info->rv = rv;
   /* NDI for transport block*/
   if (pdu_type == FAPI_NR_DL_CONFIG_TYPE_SI_DLSCH || pdu_type == FAPI_NR_DL_CONFIG_TYPE_RA_DLSCH
-      || pdu_type == FAPI_NR_DL_CONFIG_TYPE_P_DLSCH || ndi != current_harq->last_ndi) {
+      || pdu_type == FAPI_NR_DL_CONFIG_TYPE_P_DLSCH || pdu_type == FAPI_NR_DL_CONFIG_TYPE_MCCH_DLSCH
+      || ndi != current_harq->last_ndi) {
     // new data
     cw_info->new_data_indicator = true;
     current_harq->R = 0;
@@ -761,7 +773,7 @@ static bool get_cw_info(NR_UE_DL_HARQ_STATUS_t *current_harq,
   } else
     cw_info->new_data_indicator = false;
   if (pdu_type != FAPI_NR_DL_CONFIG_TYPE_SI_DLSCH && pdu_type != FAPI_NR_DL_CONFIG_TYPE_RA_DLSCH
-      && pdu_type != FAPI_NR_DL_CONFIG_TYPE_P_DLSCH) {
+      && pdu_type != FAPI_NR_DL_CONFIG_TYPE_P_DLSCH && pdu_type != FAPI_NR_DL_CONFIG_TYPE_MCCH_DLSCH) {
     current_harq->last_ndi = ndi;
     if (cw_info->new_data_indicator) {
       current_harq->round = 0;
@@ -1679,9 +1691,10 @@ static int nr_ue_process_dci_dl_11(NR_UE_MAC_INST_t *mac,
   return 0;
 }
 
-/* PDSCH scheduled by DCI format 4_1 with CRC scrambled by G-RNTI, received as for DCI format 1_0 (TS 38.214 §5.1.4) in
- * the CFR, i.e., the active DL BWP. pdsch-ConfigMulticast is not configured: default DMRS (TS 38.214 §5.1.6.2),
- * PDSCH-ConfigCommon TDRA (Table 5.1.2.1.1-1), MCS Table 5.1.3.1-1, no xOverhead-Multicast, cell ID scrambling */
+/* PDSCH scheduled by DCI format 4_0 (broadcast, G-RNTI or MCCH-RNTI) or 4_1 (multicast, G-RNTI), received as for DCI
+ * format 1_0 (TS 38.214 §5.1.4) in the CFR, i.e., the active DL BWP. pdsch-ConfigMulticast is not configured: default DMRS
+ * (TS 38.214 §5.1.6.2), PDSCH-ConfigCommon TDRA (Table 5.1.2.1.1-1), MCS Table 5.1.3.1-1, no xOverhead-Multicast, cell ID
+ * scrambling. DCI format 4_2 (multicast) follows pdsch-ConfigMulticast instead. */
 static int nr_ue_process_dci_dl_mbs(NR_UE_MAC_INST_t *mac,
                                    frame_t frame,
                                    int slot,
@@ -1692,6 +1705,23 @@ static int nr_ue_process_dci_dl_mbs(NR_UE_MAC_INST_t *mac,
   const NR_UE_DL_BWP_t *current_DL_BWP = mac->current_DL_BWP;
   NR_UE_DL_BWP_t multicast_bwp;
   const bool dci_4_2 = format == NR_DL_DCI_FORMAT_4_2;
+  const bool broadcast = format == NR_DL_DCI_FORMAT_4_0;
+  const bool mcch = dci_ind->rnti == MCCH_RNTI;
+  if (mcch) {
+    /* TS 38.331 §5.9.2.3: a valid MCCH is not read again, until a change is notified. The notification is repeated in the
+     * whole modification period: the new MCCH, acquired in it once, is valid for the rest of it */
+    const int period = frame / mac->mbs.mcch.modification_period;
+    if (dci->mcch_change_notification && mac->mbs.mcch_period != period) {
+      LOG_I(NR_MAC,
+            "[%d.%d] MCCH change notification 0x%x: acquiring the MCCH again\n",
+            frame,
+            slot,
+            dci->mcch_change_notification);
+      mac->mbs.mcch_valid = false;
+    }
+    if (mac->mbs.mcch_valid)
+      return 0;
+  }
   if (dci_4_2) {
     if (!mac->mbs.pdsch_config || (dci->antenna_ports.val != 0 && dci->antenna_ports.val != 3))
       return -1;
@@ -1708,7 +1738,8 @@ static int nr_ue_process_dci_dl_mbs(NR_UE_MAC_INST_t *mac,
   }
   fapi_nr_dl_config_request_t *dl_config = get_dl_config_request(mac, slot);
   fapi_nr_dl_config_request_pdu_t *dl_conf_req = &dl_config->dl_config_list[dl_config->number_pdus];
-  dl_conf_req->pdu_type = FAPI_NR_DL_CONFIG_TYPE_DLSCH;
+  // the MCCH is delivered to RRC as the PCCH is, not demultiplexed as a DL-SCH of the UE
+  dl_conf_req->pdu_type = mcch ? FAPI_NR_DL_CONFIG_TYPE_MCCH_DLSCH : FAPI_NR_DL_CONFIG_TYPE_DLSCH;
   dl_conf_req->dlsch_config_pdu.rnti = dci_ind->rnti;
   fapi_nr_dl_config_dlsch_pdu_rel15_t *dlsch_pdu = &dl_conf_req->dlsch_config_pdu.dlsch_config_rel15;
   dlsch_pdu->pduBitmap = 0;
@@ -1718,7 +1749,7 @@ static int nr_ue_process_dci_dl_mbs(NR_UE_MAC_INST_t *mac,
   dlsch_pdu->numCsiRsForRateMatching = 0;
   dlsch_pdu->refPoint = 0;
 
-  /* TS 38.214 §5.1.2.2.3: format 4_1 uses CORESET-0 units of K RBs; format 4_2 addresses CFR PRBs directly. */
+  /* TS 38.214 §5.1.2.2.3: formats 4_0 and 4_1 use CORESET-0 units of K RBs; format 4_2 addresses CFR PRBs directly. */
   const int cset0_size = mac->type0_PDCCH_CSS_config.num_rbs;
   const int n_initial = dci_4_2 ? current_DL_BWP->BWPSize
       : (cset0_size ? cset0_size : mac->sc_info.initial_dl_BWPSize);
@@ -1762,9 +1793,12 @@ static int nr_ue_process_dci_dl_mbs(NR_UE_MAC_INST_t *mac,
   dlsch_pdu->mcs_table = get_dlsch_mcs_table(format, TYPE_G_RNTI_, dci_ind->ss_type, NULL, NULL, false, NULL);
 
   /* TS 38.321 §5.3.1: the NDI of a G-RNTI assignment is considered toggled if the previous assignment of the HARQ
-   * process was for another RNTI */
-  NR_UE_DL_HARQ_STATUS_t *current_harq = &mac->dl_harq_info[dci->harq_pid.val][0];
-  const int ndi = current_harq->last_rnti == dci_ind->rnti ? dci->ndi : !current_harq->last_ndi;
+   * process was for another RNTI. DCI format 4_0 has neither NDI nor HARQ process number: its TB goes to the HARQ process
+   * the UE allocates to MBS broadcast (TS 38.321 §5.3.2.1 NOTE), and each assignment is the first transmission of a TB
+   * (TS 38.321 §5.3.2.2), as the gNB sends a broadcast TB once */
+  const int pid = broadcast ? NR_UE_BROADCAST_HARQ_PID : dci->harq_pid.val;
+  NR_UE_DL_HARQ_STATUS_t *current_harq = &mac->dl_harq_info[pid][0];
+  const int ndi = !broadcast && current_harq->last_rnti == dci_ind->rnti ? dci->ndi : !current_harq->last_ndi;
   const int nb_re_dmrs = 6 * dlsch_pdu->n_dmrs_cdm_groups;
   if (!get_cw_info(current_harq,
                    dlsch_pdu,
@@ -1779,7 +1813,8 @@ static int nr_ue_process_dci_dl_mbs(NR_UE_MAC_INST_t *mac,
                    0))
     return -1;
   /* Keep the received NDI for subsequent G-RNTI assignments, even when the RNTI change forced new data. */
-  current_harq->last_ndi = dci->ndi;
+  if (!broadcast)
+    current_harq->last_ndi = dci->ndi;
   current_harq->last_rnti = dci_ind->rnti;
   dlsch_pdu->n_codewords = 1;
   // TS 38.212 §5.4.2.1: one layer without maxMIMO-Layers in pdsch-ConfigMulticast, LBRM over the CFR
@@ -1788,11 +1823,11 @@ static int nr_ue_process_dci_dl_mbs(NR_UE_MAC_INST_t *mac,
     current_harq->tb_multicast = true;
     current_harq->tbslbrm = dlsch_pdu->tbslbrm;
   }
-  dlsch_pdu->harq_process_nbr = dci->harq_pid.val;
+  dlsch_pdu->harq_process_nbr = pid;
   dlsch_pdu->scaling_factor_S = 1;
-  // TS 38.213 §18: HARQ-ACK only with harq-FeedbackEnablerMulticast
+  // TS 38.213 §18: HARQ-ACK only for multicast with harq-FeedbackEnablerMulticast, never for broadcast
   dlsch_pdu->k1_feedback = 0;
-  dlsch_pdu->harq_feedback_disabled = !nr_ue_g_rnti_harq_feedback(mac, dci_ind->rnti);
+  dlsch_pdu->harq_feedback_disabled = broadcast || !nr_ue_g_rnti_harq_feedback(mac, dci_ind->rnti);
   if (!dlsch_pdu->harq_feedback_disabled) {
     // TS 38.213 §9.2.3: dl-DataToUL-ACK of PUCCH-Config, as dl-DataToUL-ACK-MulticastDCI-Format4-1 is not configured
     const NR_PUCCH_Config_t *pucch_Config = mac->current_UL_BWP->pucch_Config;
@@ -1827,7 +1862,7 @@ static int nr_ue_process_dci_dl_mbs(NR_UE_MAC_INST_t *mac,
         "[%d.%d] DCI 4_%d G-RNTI %04x: RBs %d+%d (K %d) symbols %d+%d MCS %d TBS %d HARQ %d NDI %d\n",
         frame,
         slot,
-        dci_4_2 ? 2 : 1,
+        broadcast ? 0 : (dci_4_2 ? 2 : 1),
         dci_ind->rnti,
         dlsch_pdu->start_rb,
         dlsch_pdu->number_rbs,
@@ -1849,7 +1884,7 @@ static int8_t nr_ue_process_dci(NR_UE_MAC_INST_t *mac,
                                 fapi_nr_dci_indication_pdu_t *dci_ind,
                                 const nr_dci_format_t format)
 {
-  const char *dci_formats[] = {"1_0", "1_1", "2_0", "2_1", "2_2", "2_3", "0_0", "0_1", "4_1", "4_2"};
+  const char *dci_formats[] = {"1_0", "1_1", "2_0", "2_1", "2_2", "2_3", "0_0", "0_1", "4_1", "4_2", "4_0"};
   LOG_D(MAC, "Processing received DCI format %s\n", dci_formats[format]);
 
   switch (format) {
@@ -1869,6 +1904,7 @@ static int8_t nr_ue_process_dci(NR_UE_MAC_INST_t *mac,
       return nr_ue_process_dci_dl_11(mac, frame, slot, dci, dci_ind);
       break;
 
+    case NR_DL_DCI_FORMAT_4_0:
     case NR_DL_DCI_FORMAT_4_1:
     case NR_DL_DCI_FORMAT_4_2:
       return nr_ue_process_dci_dl_mbs(mac, frame, slot, dci, dci_ind, format);
@@ -4274,15 +4310,24 @@ static nr_dci_format_t nr_extract_dci_info(NR_UE_MAC_INST_t *mac,
         return NR_DCI_NONE;
       }
       break;
+    case NFAPI_NR_FORMAT_4_0:
+      if (rnti_type != TYPE_MCCH_RNTI_ && (rnti_type != TYPE_G_RNTI_ || !nr_ue_is_broadcast_g_rnti(mac, rnti))) {
+        LOG_E(NR_MAC_DCI, "DCI format 4_0 only with MCCH-RNTI or the G-RNTI of a broadcast session\n");
+        return NR_DCI_NONE;
+      }
+      format = NR_DL_DCI_FORMAT_4_0;
+      if (!nr_dci_4_0_unpack(&mac->def_dci_pdu_rel15[slot][format], dci_pdu, dci_size))
+        return NR_DCI_NONE;
+      break;
     case NFAPI_NR_FORMAT_4_2:
-      if (rnti_type != TYPE_G_RNTI_ || mac->mbs.dci_format != NR_DL_DCI_FORMAT_4_2
+      if (rnti_type != TYPE_G_RNTI_ || nr_ue_is_broadcast_g_rnti(mac, rnti) || mac->mbs.dci_format != NR_DL_DCI_FORMAT_4_2
           || !nr_dci_4_2_unpack(&mac->def_dci_pdu_rel15[slot][NR_DL_DCI_FORMAT_4_2], dci_pdu, dci_size))
         return NR_DCI_NONE;
       format = NR_DL_DCI_FORMAT_4_2;
       break;
     case NFAPI_NR_FORMAT_4_1:
-      if (rnti_type != TYPE_G_RNTI_) {
-        LOG_E(NR_MAC_DCI, "DCI format 4_1 only with G-RNTI\n");
+      if (rnti_type != TYPE_G_RNTI_ || nr_ue_is_broadcast_g_rnti(mac, rnti)) {
+        LOG_E(NR_MAC_DCI, "DCI format 4_1 only with the G-RNTI of a multicast session\n");
         return NR_DCI_NONE;
       }
       format = NR_DL_DCI_FORMAT_4_1;
@@ -4753,6 +4798,26 @@ int nr_write_ce_ulsch_pdu(uint8_t *mac_ce, NR_SINGLE_ENTRY_PHR_MAC_CE *power_hea
   }
 
   return mac_ce - pdu;
+}
+
+/* MCCH (TS 38.331 §5.9.1): a MAC SDU of LCID 0 (TS 38.321 Table 6.2.1-1c) holding a complete RLC SDU, the MCCH-Message, in
+ * a UMD PDU of 1-byte header (TS 38.322 §6.2.2.3). The MCCH stays valid until a change is notified (TS 38.331 §5.9.2.3) */
+void nr_ue_process_mcch(NR_UE_MAC_INST_t *mac, frame_t frame, uint8_t *pdu, int pdu_len)
+{
+  uint16_t mac_len = 0, mac_subheader_len = 1;
+  if (pdu_len < 1 || ((NR_MAC_SUBHEADER_FIXED *)pdu)->LCID != 0 || !get_mac_len(pdu, pdu_len, &mac_len, &mac_subheader_len)
+      || mac_len < 2) {
+    LOG_W(NR_MAC, "[%d] invalid MCCH MAC PDU of %d bytes, dropped\n", frame, pdu_len);
+    return;
+  }
+  const uint8_t *umd = pdu + mac_subheader_len;
+  if (umd[0] >> 6) {
+    LOG_W(NR_MAC, "[%d] segmented MCCH-Message not supported, dropped\n", frame);
+    return;
+  }
+  send_mcch_rrc(mac->ue_id, umd + 1, mac_len - 1);
+  mac->mbs.mcch_valid = true;
+  mac->mbs.mcch_period = frame / mac->mbs.mcch.modification_period;
 }
 
 void nr_ue_send_sdu(NR_UE_MAC_INST_t *mac, nr_downlink_indication_t *dl_info, int pdu_id)

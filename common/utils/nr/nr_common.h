@@ -21,6 +21,11 @@
 #define MAX_BWP_SIZE 275
 #define NR_MAX_NUM_BWP 4
 #define NR_MAX_HARQ_PROCESSES 32
+/* UE DL HARQ processes: those numbered by the DCIs, then the one the UE allocates to MBS broadcast, the MCCH and the
+ * broadcast MTCHs (TS 38.321 §5.3.2.1 NOTE), so that their receptions never touch the soft buffer of a unicast or
+ * multicast TB */
+#define NR_UE_BROADCAST_HARQ_PID NR_MAX_HARQ_PROCESSES
+#define NR_UE_MAX_DL_HARQ (NR_MAX_HARQ_PROCESSES + 1)
 #define NR_MAX_HARQ_ROUNDS_FOR_STATS 16
 #define NR_NB_REG_PER_CCE 6
 #define NR_NB_SC_PER_RB 12
@@ -29,7 +34,7 @@
 #define MAX_NUM_NR_DLSCH_SEGMENTS_PER_LAYER 36
 #define MAX_NUM_NR_ULSCH_SEGMENTS_PER_LAYER 34
 #define NR_MAX_SLOTS_PER_FRAME 160
-#define RNTI_NAMES /* see 38.321  Table 7.1-2  RNTI usage */      \
+#define RNTI_NAMES /* see 38.321  Table 7.1-2  RNTI usage */       \
   R(TYPE_C_RNTI_) /* Cell RNTI */                                  \
   R(TYPE_CS_RNTI_) /* Configured Scheduling RNTI */                \
   R(TYPE_TC_RNTI_) /* Temporary C-RNTI */                          \
@@ -39,12 +44,13 @@
   R(TYPE_MSGB_RNTI_) /* Random Access MsgB RNTI */                 \
   R(TYPE_SP_CSI_RNTI_) /* Semipersistent CSI reporting on PUSCH */ \
   R(TYPE_SFI_RNTI_) /* Slot Format Indication on the given cell */ \
-  R(TYPE_INT_RNTI_) /* Indication pre-emption in DL */            \
-  R(TYPE_TPC_PUSCH_RNTI_) /* PUSCH power control */               \
-  R(TYPE_TPC_PUCCH_RNTI_) /* PUCCH power control */               \
-  R(TYPE_TPC_SRS_RNTI_)                                           \
-  R(TYPE_MCS_C_RNTI_)                                             \
-  R(TYPE_G_RNTI_) /* Group RNTI for MBS multicast */
+  R(TYPE_INT_RNTI_) /* Indication pre-emption in DL */             \
+  R(TYPE_TPC_PUSCH_RNTI_) /* PUSCH power control */                \
+  R(TYPE_TPC_PUCCH_RNTI_) /* PUCCH power control */                \
+  R(TYPE_TPC_SRS_RNTI_)                                            \
+  R(TYPE_MCS_C_RNTI_)                                              \
+  R(TYPE_G_RNTI_) /* Group RNTI for MBS multicast */               \
+  R(TYPE_MCCH_RNTI_) /* MBS broadcast MCCH */
 
 #define R(k) k ,
 typedef enum { RNTI_NAMES } nr_rnti_type_t;

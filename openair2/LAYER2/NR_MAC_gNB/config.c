@@ -1083,15 +1083,19 @@ static bool cell_has_du_sib(const nr_cell_sched_t *cell, int sib_type)
   return false;
 }
 
-/* SIB20 of a cell, announcing its broadcast sessions. The CORESET and search space of the MBS PDCCHs are needed for it
- * before any session exists, so they are created here if they are not there yet */
+/* SIB20 of a cell, saying where its MCCH is. The CORESET and search space of the MBS PDCCHs are needed for it before any
+ * session exists, so they are created here if they are not there yet */
 static NR_SIB20_r17_t *get_cell_SIB20(nr_cell_sched_t *cell)
 {
+  nr_mac_init_mbs_pdcch(cell);
+  return get_SIB20_NR(cell->mbs_coreset);
+}
+
+/* MCCH-Message announcing the broadcast sessions of a cell
+ * @return its size in bytes */
+static int encode_cell_mcch(const nr_cell_sched_t *cell, uint8_t *buf, int buf_size)
+{
   const gNB_MAC_INST *mac = RC.nrmac[0];
-  if (!cell->mbs_search_space) {
-    cell->mbs_coreset = get_mbs_coreset_config(cell->common_channels.ServingCellConfigCommon, &cell->radio_config);
-    cell->mbs_search_space = get_mbs_search_space_config(cell->mbs_coreset, &cell->radio_config);
-  }
   nr_mbs_broadcast_session_t sessions[NR_MAX_MBS_GROUPS];
   int n = 0;
   for (nr_mbs_group_t *const *g = mac->UE_info.mbs_group_list; *g; g++) {
@@ -1104,7 +1108,7 @@ static NR_SIB20_r17_t *get_cell_SIB20(nr_cell_sched_t *cell)
     s->lcid = group->config.lcid;
     s->t_reassembly = group->ptm_rlc_bearer->rlc_Config->choice.um_Uni_Directional_DL->dl_UM_RLC.t_Reassembly;
   }
-  return get_SIB20_NR(cell->mbs_coreset, n, sessions);
+  return encode_MCCH_message_NR(n, sessions, buf, buf_size);
 }
 
 /* the SI message of the Rel-17 SIBs the DU generates itself, built again whenever one of them changes */
@@ -1134,15 +1138,17 @@ static void encode_du_sibs_v17(nr_cell_sched_t *cell)
   ASN_STRUCT_FREE(asn_DEF_NR_SystemInformation_IEs, sysInfov17);
 }
 
-/** @brief Announces the broadcast sessions of the cell in SIB20 again, after one was added or released. Must be called
- * with the scheduler lock held.
- * @return false if the cell does not broadcast SIB20, in which case no UE can find the sessions */
-bool nr_mac_update_sib20(nr_cell_sched_t *cell)
+/** @brief Announces the broadcast sessions of the cell on its MCCH again, after one was added or released. The new
+ * MCCH-Message is sent from the next modification period on (TS 38.331 §5.9.1.3), and changes made in the meantime
+ * add up. Must be called with the scheduler lock held.
+ * @param new_service a session was added, else one was released (TS 38.212 §7.3.1.5.1, MCCH change notification)
+ * @return false if the cell does not broadcast SIB20, in which case it has no MCCH and no UE can find the sessions */
+bool nr_mac_update_mcch(nr_cell_sched_t *cell, bool new_service)
 {
-  if (!cell_has_du_sib(cell, NR_SIB_20))
+  if (!cell->mcch.active)
     return false;
-  encode_du_sibs_v17(cell);
-  AssertFatal(cell->common_channels.other_sib_bcch_length[1] > 0, "could not encode SIB20\n");
+  cell->mcch.next_len = encode_cell_mcch(cell, cell->mcch.next_pdu, sizeof(cell->mcch.next_pdu));
+  cell->mcch.next_change |= new_service ? NR_MCCH_CHANGE_NEW_SERVICE : NR_MCCH_CHANGE_OTHER;
   return true;
 }
 
@@ -1224,11 +1230,24 @@ bool nr_mac_configure_other_sib(nr_cell_sched_t *cell, int num_cu_sib, const f1a
 
   update_SIB1_NR_SI(cc->sib1, num_cu_sib + num_du_sib, config_sibs);
   if (cell_has_du_sib(cell, NR_SIB_20)) {
-    /* creates the MBS search space, which SIB1 then points at as the one of the MTCH */
+    /* the CORESET of the MBS PDCCHs is the commonControlResourceSetExt of SIB20, which may only be there if SIB1 has no
+     * commonControlResourceSet (TS 38.331 §6.3.2 CFR-ConfigMCCH-MTCH, Cond NotSIB1CommonControlResource) */
+    const NR_BWP_DownlinkCommon_t *initial_bwp = cc->ServingCellConfigCommon->downlinkConfigCommon->initialDownlinkBWP;
+    AssertFatal(!initial_bwp->pdcch_ConfigCommon->choice.setup->commonControlResourceSet,
+                "SIB20 is not supported with a commonControlResourceSet in SIB1 (CORESET#0 multiplexing pattern 2 or 3)\n");
+    /* creates the MBS search spaces, SIB1 then pointing at the broadcast one as the one of the MCCH and of the MTCHs */
     NR_SIB20_r17_t *sib20 = get_cell_SIB20(cell);
     ASN_STRUCT_FREE(asn_DEF_NR_SIB20_r17, sib20);
-    add_SIB1_mtch_search_space(cc->sib1, cell->mbs_search_space);
-    LOG_I(NR_MAC, "MBS: SIB20 is broadcast, search space %ld is the one of the MTCH\n", cell->mbs_search_space->searchSpaceId);
+    add_SIB1_mbs_search_space(cc->sib1, cell->mbs_broadcast_search_space);
+    if (!cell->mcch.active) {
+      cell->mcch.active = true;
+      cell->mcch.len = encode_cell_mcch(cell, cell->mcch.pdu, sizeof(cell->mcch.pdu));
+      cell->mcch.modification_period = -1;
+      cell->mcch.sent_frame = -1;
+    }
+    LOG_I(NR_MAC,
+          "MBS: SIB20 is broadcast, search space %ld is the one of the MCCH and of the MTCHs\n",
+          cell->mbs_broadcast_search_space->searchSpaceId);
   }
   cc->sib1_bcch_length = encode_SIB_NR(cc->sib1, cc->sib1_bcch_pdu, sizeof(cc->sib1_bcch_pdu));
   AssertFatal(cc->sib1_bcch_length > 0, "could not encode SIB1\n");

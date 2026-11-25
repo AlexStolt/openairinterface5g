@@ -1,17 +1,16 @@
 <!-- SPDX-License-Identifier: CC-BY-4.0 -->
 
-# MBS broadcast tutorial
+# MBS tutorial
 
 > This work is part of the ESA activity **AD-SAT** (*Provision of Broadband
 > Control Centre Services for Autonomous Driving over Satellite
 > Constellations*, activity 3F.049) with Frequentis AG. See the
 > [project page](https://connectivity.esa.int/?p=26285).
 
-One gNB sends a single transmission on a G-RNTI and three UEs receive it.
-Unlike [MBS.md](./MBS.md), which drives the group from a test adapter, here
-the session comes from the core: the MB-SMF creates a broadcast session, the
-gNB learns it over NGAP, and the payload arrives on the session's own
-multicast tunnel.
+One gNB sends a single transmission on a G-RNTI and three UEs receive it. This
+tutorial runs both MBS service types in one cell, over rfsimulator in Docker:
+a broadcast session that the core creates, and a multicast group that every
+UE joins. It ends with both running at the same time.
 
 [[_TOC_]]
 
@@ -24,24 +23,40 @@ idle. A **multicast** session is sent only to UEs that joined it. They are
 known individually, which is what makes HARQ feedback and retransmission
 possible, and each is told about the session in its own RRCReconfiguration.
 
-What runs here is broadcast:
+**Broadcast** comes from the core:
 
 * **The core creates a broadcast session.** It allocates a TMGI, distributes
   the session to a multicast group with one common TEID shared by every gNB
   in the area, and announces it with `BroadcastSessionSetup` over NGAP.
-* **The cell announces it.** SIB20 lists the sessions of the cell, each with
-  its TMGI, its G-RNTI and the configuration of its radio bearer, and gives
-  the CORESET of the PDCCHs; SIB1 names the search space.
+* **The cell announces it.** The MCCH lists the sessions of the cell, each
+  with its TMGI, its G-RNTI and the configuration of its radio bearer. SIB20
+  says where the MCCH is (every 16 radio frames, in the first 10 slots, changed
+  only every 64 radio frames) and gives the CORESET of the PDCCHs; SIB1 names
+  the search space. The MCCH and the sessions are both scheduled with DCI
+  format 4_0, the MCCH on the MCCH-RNTI and each session on its G-RNTI.
 * **Receivers configure themselves** from that, with no signalling of their
   own. The gNB does not know who receives, transmits whether or not anybody
   is connected, and a UE keeps receiving in RRC_IDLE.
 
 HARQ feedback is off, because a broadcast session has no members to report
 with, and the session is sent at a fixed MCS for the same reason: 9 unless
-`mbs_broadcast_mcs` in the `MACRLCs` section says otherwise. Multicast,
-where feedback is on, is described in [MBS.md](./MBS.md).
+`mbs_broadcast_mcs` in the `MACRLCs` section says otherwise.
 
-The remaining specification gaps are listed under
+**Multicast** comes from a test adapter in the gNB (`MBS_TEST` in its
+configuration), as the shared N3 tunnel of a multicast session does not exist
+yet:
+
+* **The adapter creates the group** when the gNB starts, and makes every
+  connected UE join it: each gets the G-RNTI, the search space and the bearer
+  of the group in an RRCReconfiguration.
+* **Its data is the DL traffic of the first UE's PDU session**, which the gNB
+  puts on the radio bearer of the group instead, so every member receives it.
+* **Every member acknowledges each transport block** on its own PUCCH. After a
+  NACK, only that UE gets the block again, point-to-point on its C-RNTI.
+
+The group is scheduled with DCI format 4_2 (or 4_1, see `dci_format` in
+`MBS_TEST`), in a search space of its own: broadcast and multicast run side by
+side in the cell. The remaining gaps are listed under
 [Known gaps](#known-gaps).
 
 ## What this needs
@@ -52,13 +67,12 @@ The remaining specification gaps are listed under
 * **A monolithic gNB.** The MRB's PDCP PDUs have to reach the RLC entity that
   transmits them, and `nr_rlc_mrb_recv_sdu()` only works when PDCP and RLC
   run in the same process. Neither a CU/DU nor a CU-CP/CU-UP split can carry
-  the MRB payload yet. Broadcast setup signalling over F1AP and E1AP is
-  implemented; the missing part is MRB context coordination and F1-U data
-  delivery, as described in [MBS.md](./MBS.md#implemented-broadcast-integration).
+  the MRB payload yet: broadcast setup signalling over F1AP and E1AP is
+  implemented, F1-U delivery of the MRB is not.
 * **SIB20 switched on in the gNB**, with `du_sibs = [20];` in its
   configuration. A cell that schedules any other SIB also has to schedule one
   of SIB2 to SIB14, hence `cu_sibs = [2];` next to it. The configuration file
-  of this tutorial has both.
+  of this tutorial has both, and the `MBS_TEST` section of the multicast group.
 * Three subscribers, IMSI `999700123456701`, `702` and `703`. They are in
   `subscribers.json` next to the compose file and are imported automatically.
 
@@ -70,6 +84,11 @@ A ready image of the core described below is on Docker Hub:
 docker pull phinetech/open5gs_core:mbs
 docker tag phinetech/open5gs_core:mbs open5gs_core:mbs
 ```
+
+Use this image, or a core built as below from the current `5mbs-development`
+branch. Older images of the 5G-MAG core write the broadcast GTP-TEID
+byte-swapped: the gNB then listens on the wrong TEID, and the session is set
+up but nothing arrives (`0 PTM transmissions` in the gNB statistics).
 
 With it, continue at [Build the images](#build-the-images). To build the core
 yourself, use the 5G-MAG fork of Open5GS, which adds the MBS functions:
@@ -134,7 +153,8 @@ docker build . -f docker/Dockerfile.gNB.ubuntu   --tag oai-gnb:mbs
 docker build . -f docker/Dockerfile.nrUE.ubuntu  --tag oai-nr-ue:mbs
 ```
 
-The compose file picks those up through `TAG`, which defaults to `mbs`.
+The compose file picks those up through `TAG`, which defaults to `mbs`. After
+a code change, build `ran-build` and both images again.
 
 ## Start everything
 
@@ -152,6 +172,47 @@ for n in 1 2 3; do docker exec mbs-ue$n ip -4 addr show oaitun_ue1; done
 If no `oaitun_ue1` appears and the UE log ends in a registration reject,
 check the core first — see the note on `open5gs-pcfd` above.
 
+The gNB creates the multicast group as it starts, and adds each UE to it once
+the UE is connected. Wait until all three are members:
+
+```bash
+docker logs mbs-gnb 2>&1 | grep "MBS test:" | tail -1
+```
+
+```
+[NR_MAC] MBS test: G-RNTI 626e members 3 SDUs injected 0 PTM transmissions 0 SDU bytes 0 pending 0 ACK 0 NACK 0
+```
+
+## Multicast
+
+The data of the group is the DL traffic of the first UE: a packet the core
+sends to that UE's address goes to all three members, in one transmission on
+the G-RNTI. Run the check from the repository root, on a fresh deployment that
+has not sent anything on the group yet:
+
+```bash
+cd ~/openairinterface5g
+python3 ci-scripts/tests/mbs-multicast.py --dci-format 42
+```
+
+It finds the address of the first UE, sends twenty packets to it from the
+core, and counts what each UE's `oaitun_ue1` received. Expect 20 of 20 on every
+UE. `--payload-bytes 1000` sends larger packets.
+
+The gNB statistics show the transmissions and the HARQ-ACKs of the members:
+
+```
+[NR_MAC] MBS test: G-RNTI 626e members 3 SDUs injected 0 PTM transmissions 20 SDU bytes 460 pending 0 ACK 57 NACK 3
+```
+
+Three members acknowledge twenty transport blocks, so ACK and NACK add up to
+60. Each NACK was followed by a retransmission to that UE alone, which is why
+every UE still counts 20.
+
+For DCI format 4_1, set `dci_format = 41;` in `MBS_TEST` in
+`gnb.mbs.band78.106prb.rfsim.conf`, restart (`docker compose down -v`, then
+`up -d`), and run the check with `--dci-format 41`.
+
 ## Create the broadcast session
 
 The MB-SMF allocates the TMGI and tells the gNB over NGAP. The application
@@ -168,7 +229,8 @@ docker exec mbs-cn curl -s --http2-prior-knowledge -X POST \
   127.0.0.4:7777/nmbsmf-mbssession/v1/mbs-sessions
 ```
 
-The gNB log now shows the session arriving and the group being created:
+The gNB log now shows the session arriving and the group being created. The
+multicast group has LCID 32, so the session gets the next free one:
 
 ```
 [NGAP]   Broadcast session setup: TMGI bed4da99f907 (6 octets)
@@ -177,28 +239,36 @@ The gNB log now shows the session arriving and the group being created:
 [E1AP]   MBS: broadcast bearer context for TMGI bed4da99f907, MRB 1, SST 1
 [GTPU]   MBS: joined group 239.0.0.4 from 192.168.77.10 on 192.168.77.101, port 2152
 [GTPU]   MBS: listening for the broadcast session on TEID 0x2b17
-[RLC]    fb30: added PTM RLC entity of MRB 1 on LCID 32
-[NR_MAC] added MBS broadcast session G-RNTI fb30: LCID 32, HARQ feedback disabled, PTM HARQ processes 0xf000, DCI 4_1
+[RLC]    fb30: added PTM RLC entity of MRB 1 on LCID 31
+[NR_MAC] added MBS broadcast session G-RNTI fb30: LCID 31, HARQ feedback disabled, PTM HARQ processes 0x0000, DCI 4_0
 [PDCP]   10000fb30: added MRB 1 (SN size 12)
 ```
 
-Nothing is sent to the UEs for it. Each one finds the session the next time
-it reads SIB20, within a second or two, and says so in its own log:
+Nothing is sent to the UEs for it. The gNB puts it on the MCCH from the next
+modification period on, at most 640 ms later, and flags the change in the
+PDCCHs of the MCCH. Each UE then reads the MCCH again and says so in its own
+log:
 
 ```
-[RLC]    0000: added PTM RLC entity of MRB 32 on LCID 32
-[PDCP]   0: added MRB 32 (SN size 12)
-[NR_RRC] MBS: broadcast session with service ID bed4da announced on G-RNTI fb30, MTCH on LCID 32
+[NR_RRC] MBS: MCCH acquired
+[RLC]    0000: added PTM RLC entity of MRB 31 on LCID 31
+[PDCP]   0: added MRB 31 (SN size 12)
+[NR_RRC] MBS: broadcast session with service ID bed4da announced on G-RNTI fb30, MTCH on LCID 31
+```
+
+Wait for this last line on all three UEs before sending:
+
+```bash
+for n in 1 2 3; do docker logs mbs-ue$n 2>&1 | grep "broadcast session with service ID"; done
 ```
 
 Note the group address the core chose (`239.0.0.4` above) is not the one the
 application sends to: the core distributes the session to a group of its own.
 
-## Send traffic and watch it arrive
+## Send broadcast traffic and watch it arrive
 
 What a UE receives on the group is written to `oaitun_ue1`, so counting the
-packets the interface took in is enough; the UEs are otherwise idle. Read the
-counter before sending:
+packets the interface took in is enough. Read the counter before sending:
 
 ```bash
 for n in 1 2 3; do
@@ -229,13 +299,11 @@ and the three counts are the same for that reason.
 
 Expect 20 of 20. Broadcast has no feedback: the gNB does not know who is
 listening, so nothing is retransmitted and what is lost stays lost.
-Multicast is where ACK/NACK and retransmission belong; see
-[MBS.md](./MBS.md).
 
 To check the first batch automatically, run `python3 ci-scripts/tests/mbs-broadcast.py`
 from the repository root instead of the counter and send loops above. Use a fresh
 session, wait for all three UEs to announce it, and send no warm-up traffic: the
-check exercises the first reuse of the broadcast HARQ processes.
+check expects the session's first PTM transmissions.
 
 The gNB counts what it sent in its periodic statistics, and does so with no
 UE in the cell as well:
@@ -243,6 +311,22 @@ UE in the cell as well:
 ```
 MBS broadcast session G-RNTI fb30: 20 PTM transmissions, 460 bytes, MCS 9
 ```
+
+## Broadcast and multicast together
+
+The broadcast session (DCI 4_0) and the multicast group (DCI 4_2 or 4_1) are
+now both in the cell, each with its own G-RNTI, search space and MTCH LCID. A
+UE decodes one PDSCH per slot, so the gNB sends one of them per slot, the two
+taking turns. Send to both at once:
+
+```bash
+cd ~/openairinterface5g
+python3 ci-scripts/tests/mbs-broadcast-multicast.py --dci-format 42
+```
+
+It sends twenty packets on each, interleaved, and expects 40 of 40 on every
+UE, as both sessions end up on `oaitun_ue1`. The gNB statistics count 20 more
+transmissions for each of the two.
 
 ## Release the session
 
@@ -254,40 +338,62 @@ docker exec mbs-cn curl -s --http2-prior-knowledge -X DELETE \
 ```
 
 The core sends `BroadcastSessionReleaseRequest`. The gNB leaves the group and
-removes the session from SIB20, and every UE stops receiving it the next time
-it reads SIB20:
+removes the session from the MCCH from its next modification period on, and
+every UE stops receiving it when it reads the changed MCCH:
 
 ```
 [NGAP]   Broadcast Session Release initiating message
 [E1AP]   MBS: broadcast user plane released, TEID 0x2b17
-[NR_MAC] MBS: broadcast session for TMGI bed4da99f907 released, G-RNTI f738
-[NR_RRC] MBS: broadcast session with MTCH on LCID 32 not announced anymore
+[NR_MAC] MBS: broadcast session for TMGI bed4da99f907 released, G-RNTI fb30
+[NR_RRC] MBS: broadcast session with MTCH on LCID 31 not announced anymore
 ```
 
 A session created afterwards is announced and received like the first one.
 The gNB can also release a session without the core, through the telnet
-command `rrc release_mbs_broadcast`.
+command `rrc release_mbs_broadcast`. The multicast group stays, as it belongs
+to the gNB's test adapter.
 
 ## Stop
 
 ```bash
+cd ci-scripts/yaml_files/5g_rfsimulator_mbs_broadcast
 docker compose down -v
 ```
 
 `-v` throws away the MongoDB volume, so the subscribers are imported again on
 the next start.
 
+## Unit tests
+
+The DCI formats, the MCCH and SIB20 have unit tests that need no deployment:
+
+```bash
+cd ~/openairinterface5g
+mkdir -p build && cd build
+cmake .. -GNinja -DENABLE_TESTS=ON && ninja tests
+ctest -R 'DciFormat|McchMessage' --output-on-failure
+```
+
+They pack DCI formats 4_0, 4_1 and 4_2 with the gNB code and read them back
+with the UE code, check the MCCH change notification, and decode the
+MCCH-Message and SIB20 the gNB encodes.
+
 ## Known gaps
 
-* **There is no MCCH.** The list of sessions belongs on it, and SIB20 should
-  only say where it is. Until it exists the message that goes on the MCCH,
-  `MBSBroadcastConfiguration`, is carried inside SIB20, and the UE reads
-  SIB20 again every 1.28 s to follow it.
-* **The PDCCH uses DCI format 4_1**, the multicast one, where broadcast has
-  format 4_0, and a session takes its HARQ processes from the ones of unicast
-  rather than having a broadcast process of its own. The gNB therefore keeps
-  four HARQ processes of every connected UE away from unicast while a
-  session exists.
+* **The MCCH is sent on one beam**, that of the first SSB, in the first slot
+  of its window that has room, and fits in one transport block (no RLC
+  segmentation). Its schedule is fixed (`nr_radio_config.h`), the CFR is the
+  initial DL BWP, and `searchSpaceMCCH` and `searchSpaceMTCH` are the same
+  search space, which may not be zero.
+* **Multicast data comes from the test adapter.** The shared N3 tunnel of a
+  multicast session (TS 23.247 §7.2.1.4) does not exist yet, so the group
+  carries the DL traffic of one UE's PDU session, and every connected UE is
+  made a member rather than joining through the core.
+* **Multicast needs a monolithic gNB too**: F1AP Multicast Context Setup and
+  the multicast part of UE Context Modification (TS 38.473) are not
+  implemented. NACK-only HARQ-ACK, PTM retransmissions and a CFR smaller than
+  the BWP (TS 38.213 §18) are not either.
 * **The UE delivers what it receives to the interface of its first PDU
-  session**, as it has no interface for MBS sessions. A UE that never had a
-  PDU session receives the session but has nowhere to deliver it.
+  session**, broadcast and multicast alike, as it has no interface for MBS
+  sessions. A UE that never had a PDU session receives a broadcast session but
+  has nowhere to deliver it.

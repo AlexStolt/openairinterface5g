@@ -170,6 +170,8 @@ typedef uint32_t m_tmsi_t;
 #define NOT_A_RANDOM_UE_IDENTITY (uint64_t)0xFFFFFFFF
 #define NOT_A_RNTI (rnti_t)0
 #define M_RNTI (rnti_t)0xFFFD
+/* NR MCCH-RNTI (TS 38.321 Table 7.1-1), the value of the LTE M-RNTI */
+#define MCCH_RNTI (rnti_t)0xFFFD
 #define P_RNTI (rnti_t)0xFFFE
 #define SI_RNTI (rnti_t)0xFFFF
 #define CBA_RNTI (rnti_t)0xfff4

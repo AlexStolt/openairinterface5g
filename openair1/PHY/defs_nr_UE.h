@@ -353,7 +353,7 @@ typedef struct PHY_VARS_NR_UE_s {
   NR_UE_PRACH *prach_vars[NUMBER_OF_CONNECTED_gNB_MAX];
   NR_UE_PRS *prs_vars[NR_MAX_PRS_COMB_SIZE];
   uint8_t prs_active_gNBs;
-  NR_DL_UE_HARQ_t dl_harq_processes[2][NR_MAX_HARQ_PROCESSES];
+  NR_DL_UE_HARQ_t dl_harq_processes[2][NR_UE_MAX_DL_HARQ];
   NR_UL_UE_HARQ_t ul_harq_processes[NR_MAX_HARQ_PROCESSES];
   NR_UL_UE_HARQ_t sl_harq_processes[NR_MAX_HARQ_PROCESSES];
 

@@ -932,6 +932,8 @@ typedef struct NR_UE_info {
 
 /// a UE can receive up to maxG-RNTI-r17 groups, so are the groups of a cell
 #define NR_MAX_MBS_GROUPS NR_MAX_G_RNTI
+/// largest MCCH-Message of a cell, NR_MAX_MBS_GROUPS sessions with one MRB each
+#define NR_MCCH_MAX_SIZE 512
 
 /// HARQ-ACK feedback of an MBS multicast session, from MBS-RNTI-SpecificConfig (TS 38.331 §6.3.2)
 typedef enum {
@@ -1445,10 +1447,34 @@ typedef struct nr_cell_sched_s {
 
   /// MCS of the MBS broadcast sessions of the cell (mbs_broadcast_mcs)
   int mbs_broadcast_mcs;
-  /// CORESET and Type-3 CSS of pdcch-ConfigMulticast in the CFR for DCI format 4_1 with CRC scrambled by G-RNTI
-  /// (TS 38.213 §10.1)
+  /// CORESET of the MBS PDCCHs in the CFR, Type-3 CSS of pdcch-ConfigMulticast for DCI formats 4_1/4_2 with G-RNTI
+  /// (multicast, TS 38.213 §10.1), and CSS of searchSpaceMCCH and searchSpaceMTCH for DCI format 4_0 with MCCH-RNTI or
+  /// G-RNTI (broadcast)
   NR_ControlResourceSet_t *mbs_coreset;
   NR_SearchSpace_t *mbs_search_space;
+  NR_SearchSpace_t *mbs_broadcast_search_space;
+  /// MBS group scheduled first in the next slot: one PTM PDSCH per slot, as a UE receives one PDSCH per slot
+  int mbs_next_group;
+  /// a broadcast PDSCH is scheduled in the current slot: its receivers are not known, so no UE gets a unicast PDSCH then
+  bool mbs_broadcast_in_slot;
+  /// MCCH of the cell (TS 38.331 §5.9.1), transmitted while SIB20 is broadcast
+  struct {
+    bool active;
+    /// MCCH-Message of the current modification period, and the change notification of its PDCCHs (TS 38.212 §7.3.1.5.1)
+    uint8_t pdu[NR_MCCH_MAX_SIZE];
+    int len;
+    uint8_t change;
+    /// MCCH-Message from the next modification period on if next_len > 0 (TS 38.331 §5.9.1.3), announced with next_change
+    uint8_t next_pdu[NR_MCCH_MAX_SIZE];
+    int next_len;
+    uint8_t next_change;
+    /// SFN / modification period of the current modification period, -1 before the first one
+    int modification_period;
+    /// radio frame of the repetition sent last, -1 if none
+    int sent_frame;
+    /// transport block of the MCCH, kept until the PHY took it
+    byte_array_t tb;
+  } mcch;
 
   /// Dedicated UL TDA list, built from frame_structure at config time
   seq_arr_t ul_tda;

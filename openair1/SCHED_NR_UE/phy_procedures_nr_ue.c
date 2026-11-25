@@ -82,6 +82,7 @@ void nr_fill_rx_indication(fapi_nr_rx_indication_t *rx_ind,
     case FAPI_NR_RX_PDU_TYPE_RAR:
     case FAPI_NR_RX_PDU_TYPE_DLSCH:
     case FAPI_NR_RX_PDU_TYPE_PCCH:
+    case FAPI_NR_RX_PDU_TYPE_MCCH:
       if(dlsch) {
         NR_DL_UE_HARQ_t *dl_harq = &ue->dl_harq_processes[cw_idx][harq_pid];
         rx->pdsch_pdu.harq_pid = harq_pid;
@@ -754,6 +755,9 @@ static void nr_ue_dlsch_procedures(PHY_VARS_NR_UE *ue,
       break;
     case TYPE_P_RNTI_:
       ind_type = FAPI_NR_RX_PDU_TYPE_PCCH;
+      break;
+    case TYPE_MCCH_RNTI_:
+      ind_type = FAPI_NR_RX_PDU_TYPE_MCCH;
       break;
     default:
       AssertFatal(false, "Invalid DLSCH type %d\n", dlsch->rnti_type);

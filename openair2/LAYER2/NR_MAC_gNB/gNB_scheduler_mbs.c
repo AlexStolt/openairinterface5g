@@ -6,10 +6,11 @@
  * \brief gNB MBS multicast scheduling: point-to-multipoint (PTM) transmissions of MBS groups on a G-RNTI with DCI formats 4_1/4_2
  * in the Type-3 CSS of the CFR (TS 38.300 §16.10.5, TS 38.213 §18)
  *
- * A broadcast session (TS 38.300 §16.10.6) is scheduled the same way, with two differences that follow from its
- * receivers being unknown to the gNB: it has no members, so it is transmitted whether or not anybody is connected, and
- * it has a fixed MCS. INTERIM: it still uses DCI format 4_1 and the HARQ processes of the unicast HARQ entity, where
- * TS 38.213 §18 has DCI format 4_0 and TS 38.321 §5.3.2.1 a broadcast HARQ process of its own.
+ * A broadcast session (TS 38.300 §16.10.6) is scheduled the same way, with the differences that follow from its
+ * receivers being unknown to the gNB: it has no members, so it is transmitted whether or not anybody is connected, it
+ * has a fixed MCS, and it is scheduled by DCI format 4_0 in the CSS of searchSpaceMTCH. DCI format 4_0 has no HARQ
+ * fields, and a broadcast TB is sent once: no HARQ process the DCIs of the UEs number is taken, the UE allocates one of its
+ * own to MBS broadcast (TS 38.321 §5.3.2.1 NOTE).
  */
 
 #include <errno.h>
@@ -47,38 +48,17 @@ static bool is_mbs_member(const nr_mbs_group_t *group, rnti_t rnti)
   return false;
 }
 
-/* Keeps the PTM HARQ processes of a group out of the unicast scheduling of a UE: G-RNTI and C-RNTI share the DL HARQ
- * entity of the UE (TS 38.321 §5.3.2.1). Free processes are reserved now, busy ones when their unicast transport block
- * is finished. Returns false if the UE does not have these processes */
-static bool nr_mac_reserve_ptm_harq(const nr_mbs_group_t *group, NR_UE_info_t *UE)
+/** @brief Creates the CORESET and search spaces of the MBS PDCCHs of a cell, if not done yet: they are announced in SIB1
+ * and SIB20 before any session exists */
+void nr_mac_init_mbs_pdcch(nr_cell_sched_t *cell)
 {
-  NR_UE_sched_ctrl_t *sched_ctrl = &UE->UE_sched_ctrl;
-  if ((sched_ctrl->ptm_dl_harq_mask & group->harq_mask) == group->harq_mask)
-    return true;
-  if (group->harq_mask >> sched_ctrl->available_dl_harq.len)
-    return false;
-  sched_ctrl->ptm_dl_harq_mask |= group->harq_mask;
-  sched_ctrl->ptm_pdsch_frame = MAX_FRAME_NUMBER;
-  for (int pid = 0; pid < sched_ctrl->available_dl_harq.len; pid++) {
-    const NR_UE_harq_t *harq = &sched_ctrl->harq_processes[pid];
-    if ((group->harq_mask & (1U << pid)) && !harq->is_waiting && harq->round == 0)
-      id_list_remove(&sched_ctrl->available_dl_harq, pid);
-  }
-  return true;
-}
-
-/* gives the PTM HARQ processes of a group back to the unicast scheduling of a UE */
-static void nr_mac_release_ptm_harq(const nr_mbs_group_t *group, NR_UE_info_t *UE)
-{
-  NR_UE_sched_ctrl_t *sched_ctrl = &UE->UE_sched_ctrl;
-  if (!(sched_ctrl->ptm_dl_harq_mask & group->harq_mask))
+  if (cell->mbs_coreset)
     return;
-  sched_ctrl->ptm_dl_harq_mask &= ~group->harq_mask;
-  for (int pid = 0; pid < sched_ctrl->available_dl_harq.len; pid++) {
-    const NR_UE_harq_t *harq = &sched_ctrl->harq_processes[pid];
-    if ((group->harq_mask & (1U << pid)) && !harq->is_waiting && harq->round == 0)
-      id_list_push_back(&sched_ctrl->available_dl_harq, pid);
-  }
+  const NR_ServingCellConfigCommon_t *scc = cell->common_channels.ServingCellConfigCommon;
+  cell->mbs_coreset = get_mbs_coreset_config(scc, &cell->radio_config);
+  cell->mbs_search_space = get_mbs_search_space_config(cell->mbs_coreset, &cell->radio_config, NR_MBS_SEARCH_SPACE_ID);
+  cell->mbs_broadcast_search_space =
+      get_mbs_search_space_config(cell->mbs_coreset, &cell->radio_config, NR_MBS_BROADCAST_SEARCH_SPACE_ID);
 }
 
 /** @brief Establishes the context of an MBS multicast session in a cell, as done in the gNB-DU by Multicast Context
@@ -97,14 +77,16 @@ nr_mbs_group_t *nr_mac_add_mbs_group(gNB_MAC_INST *mac, nr_cell_sched_t *cell, c
     LOG_E(NR_MAC, "DCI 4_2 is supported for multicast sessions only\n");
     return NULL;
   }
+  /* multicast groups share the Type-3 CSS of pdcch-ConfigMulticast, and with it one DCI format; broadcast sessions have
+   * searchSpaceMTCH and DCI format 4_0 */
   for (nr_mbs_group_t **g = UE_info->mbs_group_list; *g; g++) {
-    if ((*g)->cell == cell && (*g)->config.dci_4_2 != config->dci_4_2) {
-      LOG_E(NR_MAC, "MBS groups sharing a CFR must use the same DCI format\n");
+    if (!config->broadcast && (*g)->cell == cell && !(*g)->config.broadcast && (*g)->config.dci_4_2 != config->dci_4_2) {
+      LOG_E(NR_MAC, "multicast groups sharing a CFR must use the same DCI format\n");
       return NULL;
     }
   }
   const int num_dlharq = min(cell->radio_config.num_dlharq, NR_MBS_MAX_PTM_HARQ);
-  if (config->num_harq < 1 || config->num_harq >= num_dlharq) {
+  if (!config->broadcast && (config->num_harq < 1 || config->num_harq >= num_dlharq)) {
     LOG_E(NR_MAC, "cannot reserve %d of %d DL HARQ processes for PTM transmissions\n", config->num_harq, num_dlharq);
     return NULL;
   }
@@ -128,19 +110,19 @@ nr_mbs_group_t *nr_mac_add_mbs_group(gNB_MAC_INST *mac, nr_cell_sched_t *cell, c
   if (config->dci_4_2)
     group->pdsch_config = get_mbs_pdsch_config(cell->common_channels.ServingCellConfigCommon);
   group->last_harq_pid = -1;
-  /* the highest HARQ process numbers are reserved, the lowest ones are kept for unicast */
-  for (int pid = num_dlharq - config->num_harq; pid < num_dlharq; pid++)
-    group->harq_mask |= 1U << pid;
+  /* the highest HARQ process numbers are reserved, the lowest ones are kept for unicast; a broadcast session reserves
+   * none, as DCI format 4_0 indicates no HARQ process */
+  if (!config->broadcast) {
+    for (int pid = num_dlharq - config->num_harq; pid < num_dlharq; pid++)
+      group->harq_mask |= 1U << pid;
+  }
   group->ptm_rlc_bearer = get_MRB_PTM_RLC_BearerConfig(config->lcid, config->mrb_id, &mac->rlc_config);
   /* the RLC entity of a broadcast MRB has a 6-bit SN, the only one MRB-RLC-ConfigBroadcast can announce
    * (TS 38.331 §6.3.2) */
   if (config->broadcast)
     *group->ptm_rlc_bearer->rlc_Config->choice.um_Uni_Directional_DL->dl_UM_RLC.sn_FieldLength = NR_SN_FieldLengthUM_size6;
   nr_rlc_add_mrb(g_rnti, group->ptm_rlc_bearer);
-  if (!cell->mbs_search_space) {
-    cell->mbs_coreset = get_mbs_coreset_config(cell->common_channels.ServingCellConfigCommon, &cell->radio_config);
-    cell->mbs_search_space = get_mbs_search_space_config(cell->mbs_coreset, &cell->radio_config);
-  }
+  nr_mac_init_mbs_pdcch(cell);
   UE_info->mbs_group_list[idx] = group;
   LOG_I(NR_MAC,
         "added MBS %s G-RNTI %04x: LCID %d, HARQ feedback %s, PTM HARQ processes 0x%04x, DCI 4_%d\n",
@@ -149,7 +131,7 @@ nr_mbs_group_t *nr_mac_add_mbs_group(gNB_MAC_INST *mac, nr_cell_sched_t *cell, c
         config->lcid,
         config->harq_feedback == NR_MBS_HARQ_FEEDBACK_DISABLED ? "disabled" : "ACK/NACK",
         group->harq_mask,
-        config->dci_4_2 ? 2 : 1);
+        config->broadcast ? 0 : (config->dci_4_2 ? 2 : 1));
   return group;
 }
 
@@ -172,11 +154,6 @@ void nr_mac_release_mbs_group(gNB_MAC_INST *mac, rnti_t g_rnti)
       nr_mac_remove_mbs_member(mac, group, UE);
     } else {
       group->num_members--;
-    }
-  }
-  if (group->config.broadcast) {
-    FOR_EACH_CONNECTED_UE(UE_info, UE) {
-      nr_mac_release_ptm_harq(group, UE);
     }
   }
   for (int pid = 0; pid < NR_MAX_HARQ_PROCESSES; pid++)
@@ -551,9 +528,11 @@ static int nr_mbs_acknack_scheduling(nr_cell_sched_t *cell,
   return -1;
 }
 
+/* PDCCH and PDSCH of a PTM transmission of a group, or of the MCCH if group is NULL, with its change notification */
 static void nr_mbs_fill_pdcch_pdsch(nr_cell_sched_t *cell,
                                     post_process_pdsch_t *pp_pdsch,
                                     const nr_mbs_group_t *group,
+                                    uint8_t mcch_change,
                                     const NR_sched_pdsch_t *sched_pdsch,
                                     const NR_sched_pucch_t *pucch,
                                     NR_sched_pdcch_t *sched_pdcch,
@@ -565,8 +544,11 @@ static void nr_mbs_fill_pdcch_pdsch(nr_cell_sched_t *cell,
                                     const NR_UE_info_t *member)
 {
   NR_ServingCellConfigCommon_t *scc = cell->common_channels.ServingCellConfigCommon;
-  NR_SearchSpace_t *ss = cell->mbs_search_space;
-  const nr_mbs_harq_t *harq = &group->harq[sched_pdsch->dl_harq_pid];
+  const bool broadcast = !group || group->config.broadcast;
+  const bool dci_4_2 = group && group->config.dci_4_2;
+  const rnti_t rnti = group ? group->g_rnti : MCCH_RNTI;
+  NR_SearchSpace_t *ss = broadcast ? cell->mbs_broadcast_search_space : cell->mbs_search_space;
+  const nr_mbs_harq_t *harq = group ? &group->harq[sched_pdsch->dl_harq_pid] : NULL;
   nfapi_nr_dl_tti_request_body_t *dl_req = pp_pdsch->dl_req;
 
   nfapi_nr_dl_tti_pdcch_pdu_rel15_t *pdcch_pdu = cell->pdcch_pdu_idx[coreset->controlResourceSetId];
@@ -596,8 +578,8 @@ static void nr_mbs_fill_pdcch_pdsch(nr_cell_sched_t *cell,
                                                                    sched_pdsch,
                                                                    NULL,
                                                                    false,
-                                                                   harq->round,
-                                                                   group->g_rnti,
+                                                                   harq ? harq->round : 0,
+                                                                   rnti,
                                                                    fapi_beam,
                                                                    nl_tbslbrm,
                                                                    pdu_index);
@@ -610,21 +592,22 @@ static void nr_mbs_fill_pdcch_pdsch(nr_cell_sched_t *cell,
                                                    aggregation_level,
                                                    cce_index,
                                                    fapi_beam,
-                                                   group->g_rnti);
+                                                   rnti);
   pdcch_pdu->numDlDci++;
 
   /* TS 38.214 §5.1.2.2.3: RIV of RB'start = RBstart / K and L'RBs = LRBs / K relative to the CFR, sized on CORESET 0 */
-  const int K = group->config.dci_4_2 ? 1
-      : get_multicast_type1_rb_granularity(sched_pdsch->bwp_info.bwpSize, cell->cset0_bwp_size);
+  const int K = dci_4_2 ? 1 : get_multicast_type1_rb_granularity(sched_pdsch->bwp_info.bwpSize, cell->cset0_bwp_size);
   dci_pdu_rel15_t dci_payload = {0};
   dci_payload.frequency_domain_assignment.val =
-      PRBalloc_to_locationandbandwidth0(sched_pdsch->rbSize / K, sched_pdsch->rbStart / K,
-                                       group->config.dci_4_2 ? sched_pdsch->bwp_info.bwpSize : cell->cset0_bwp_size);
+      PRBalloc_to_locationandbandwidth0(sched_pdsch->rbSize / K,
+                                        sched_pdsch->rbStart / K,
+                                        dci_4_2 ? sched_pdsch->bwp_info.bwpSize : cell->cset0_bwp_size);
   dci_payload.time_domain_assignment.val = sched_pdsch->time_domain_allocation;
   dci_payload.vrb_to_prb_mapping.val = 0;
   dci_payload.mcs = sched_pdsch->mcs;
-  dci_payload.ndi = harq->ndi;
+  dci_payload.ndi = harq ? harq->ndi : 0;
   dci_payload.rv = pdsch_pdu->rvIndex[0];
+  dci_payload.mcch_change_notification = mcch_change;
   dci_payload.harq_pid.val = sched_pdsch->dl_harq_pid;
   /* without harq-FeedbackEnablerMulticast, no HARQ-ACK (TS 38.213 §18) and DAI, PRI and K1 are not used */
   dci_payload.dai[0].val = pucch ? (pucch->dai_c_mc - 1) & 3 : 0;
@@ -632,31 +615,162 @@ static void nr_mbs_fill_pdcch_pdsch(nr_cell_sched_t *cell,
   dci_payload.pdsch_to_harq_feedback_timing_indicator.val = pucch ? pucch->timing_indicator : 0;
   NR_UE_DL_BWP_t dl = {0};
   NR_UE_ServingCell_Info_t sc_info = {0};
-  if (group->config.dci_4_2) {
+  if (dci_4_2) {
     dl = member->current_DL_BWP;
     dl.pdsch_Config = group->pdsch_config;
     /* TS 38.212 Table 7.3.1.2.2-1: port 1000, one or two CDM groups without data. */
     dci_payload.antenna_ports.val = pdsch_pdu->numDmrsCdmGrpsNoData == 1 ? 0 : 3;
   }
-  fill_dci_pdu_rel15(group->config.dci_4_2 ? &sc_info : NULL,
-                     group->config.dci_4_2 ? &dl : NULL,
-                     group->config.dci_4_2 ? &member->current_UL_BWP : NULL,
+  const nr_dci_format_t format = broadcast ? NR_DL_DCI_FORMAT_4_0 : dci_4_2 ? NR_DL_DCI_FORMAT_4_2 : NR_DL_DCI_FORMAT_4_1;
+  fill_dci_pdu_rel15(dci_4_2 ? &sc_info : NULL,
+                     dci_4_2 ? &dl : NULL,
+                     dci_4_2 ? &member->current_UL_BWP : NULL,
                      dci_pdu,
                      &dci_payload,
-                     group->config.dci_4_2 ? NR_DL_DCI_FORMAT_4_2 : NR_DL_DCI_FORMAT_4_1,
-                     TYPE_G_RNTI_,
+                     format,
+                     group ? TYPE_G_RNTI_ : TYPE_MCCH_RNTI_,
                      0,
                      ss,
                      coreset,
-                     group->config.dci_4_2 ? member->pdsch_HARQ_ACK_Codebook : 0,
+                     dci_4_2 ? member->pdsch_HARQ_ACK_Codebook : 0,
                      cell->cset0_bwp_size);
 }
 
-static void nr_schedule_mbs_group(gNB_MAC_INST *mac, nr_cell_sched_t *cell, post_process_pdsch_t *pp_pdsch, nr_mbs_group_t *group)
+/* Resources of a PTM transmission in the CFR, on the beam of the first SSB as other common channels: a PDCCH candidate in
+ * the MBS CORESET, and a PDSCH in a free block of RBs */
+typedef struct {
+  int beam_index;
+  NR_beam_alloc_t beam;
+  NR_ControlResourceSet_t *coreset;
+  NR_sched_pdcch_t sched_pdcch;
+  int cce_index;
+  int aggregation_level;
+  NR_sched_pdsch_t sched_pdsch;
+  /// RB granularity of the frequency domain resource assignment (TS 38.214 §5.1.2.2.3)
+  int K;
+  /// RBs of the PDSCH at most
+  int max_rbs;
+} nr_mbs_tx_t;
+
+static void nr_mbs_release_beam(nr_cell_sched_t *cell, frame_t frame, slot_t slot, const nr_mbs_tx_t *tx)
+{
+  reset_beam_status(&cell->beam_info, frame, slot, tx->beam_index, cell->frame_structure.numb_slots_frame, tx->beam.new_beam);
+}
+
+/* Finds the PDCCH and the PDSCH RBs of a PTM transmission in the slot, sharing the free RBs among share flows.
+ * @return false if there are none, the beam being released then */
+static bool nr_mbs_get_resources(gNB_MAC_INST *mac,
+                                 nr_cell_sched_t *cell,
+                                 frame_t frame,
+                                 slot_t slot,
+                                 rnti_t rnti,
+                                 NR_SearchSpace_t *ss,
+                                 bool dci_4_2,
+                                 int share,
+                                 nr_mbs_tx_t *tx)
+{
+  NR_ServingCellConfigCommon_t *scc = cell->common_channels.ServingCellConfigCommon;
+  const int n_slots_frame = cell->frame_structure.numb_slots_frame;
+  const NR_COMMON_channels_t *cc = &cell->common_channels;
+  tx->beam_index = get_beam_from_ssbidx(cell, cc->num_active_ssb > 0 ? cc->ssb_index[0] : 0);
+  tx->beam = beam_allocation_procedure(&cell->beam_info, frame, slot, tx->beam_index, n_slots_frame);
+  if (tx->beam.idx < 0)
+    return false;
+
+  tx->coreset = cell->mbs_coreset;
+  NR_BWP_t *initial_dl_bwp = &scc->downlinkConfigCommon->initialDownlinkBWP->genericParameters;
+  tx->sched_pdcch = set_pdcch_structure(cell, ss, tx->coreset, scc, initial_dl_bwp, cell->type0_PDCCH_CSS_config);
+  tx->cce_index = get_cce_index(cell, slot, rnti, &tx->aggregation_level, tx->beam.idx, ss, tx->coreset, &tx->sched_pdcch, 0.0f);
+  if (tx->cce_index < 0) {
+    LOG_D(NR_MAC, "%4d.%2d RNTI %04x: no free CCE for MBS DCI\n", frame, slot, rnti);
+    nr_mbs_release_beam(cell, frame, slot, tx);
+    return false;
+  }
+
+  /* TS 38.214 Table 5.1.2.1.1-1: pdsch-TimeDomainAllocationList of PDSCH-ConfigCommon for G-RNTI and MCCH-RNTI in a CSS */
+  NR_PDSCH_TimeDomainResourceAllocationList_t *tdalist =
+      scc->downlinkConfigCommon->initialDownlinkBWP->pdsch_ConfigCommon->choice.setup->pdsch_TimeDomainAllocationList;
+  const int tda = get_dl_tda(mac, cell, slot);
+  NR_tda_info_t tda_info = set_tda_info_from_list(tdalist, tda);
+  DevAssert(tda_info.valid_tda);
+  const uint16_t slbitmap = SL_to_bitmap(tda_info.startSymbolIndex, tda_info.nrOfSymbols);
+
+  /* the CFR is the initial DL BWP; DCI formats 4_0 and 4_1 address its first K * N_CORESET0 RBs */
+  const bwp_info_t cfr = {.bwpStart = NRRIV2PRBOFFSET(initial_dl_bwp->locationAndBandwidth, MAX_BWP_SIZE),
+                          .bwpSize = NRRIV2BW(initial_dl_bwp->locationAndBandwidth, MAX_BWP_SIZE)};
+  tx->K = dci_4_2 ? 1 : get_multicast_type1_rb_granularity(cfr.bwpSize, cell->cset0_bwp_size);
+  const int addressable_rbs = dci_4_2 ? cfr.bwpSize : min(cfr.bwpSize, tx->K * cell->cset0_bwp_size);
+  int rb_start = 0;
+  const uint16_t *vrb_map = cell->common_channels.vrb_map[tx->beam.idx];
+  const int free_rbs = get_ptm_rb_block(vrb_map, cfr.bwpStart, addressable_rbs, tx->K, slbitmap, &rb_start);
+  tx->max_rbs = free_rbs / share / tx->K * tx->K;
+  if (tx->max_rbs == 0) {
+    nr_mbs_release_beam(cell, frame, slot, tx);
+    return false;
+  }
+  tx->sched_pdsch = (NR_sched_pdsch_t){
+      .bwp_info = cfr,
+      .time_domain_allocation = tda,
+      .tda_info = tda_info,
+      .dmrs_parms = get_dl_dmrs_params(scc, NULL, &tda_info, 1),
+      .nrOfLayers = 1,
+      .alloc_type = PDSCH_TYPE1,
+      .rbStart = rb_start,
+      .pucch_allocation = -1,
+      .ant_port_idx = {.numSpatialStreamIndices = 1,
+                       .spatialStreamIndices[0] = cell->radio_config.spatial_stream_index[tx->beam.idx]},
+  };
+  return true;
+}
+
+/* RBs, in units of K, and TBS of a PDSCH of bytes at an MCS of Table 5.1.3.1-1 (TS 38.214 §5.1.3.1), at most max_rbs */
+static void nr_mbs_size_pdsch(nr_mbs_tx_t *tx, int mcs, uint32_t bytes)
+{
+  const int mcs_table = 0;
+  NR_sched_pdsch_t *pdsch = &tx->sched_pdsch;
+  pdsch->mcs = mcs;
+  pdsch->Qm = nr_get_Qm_dl(mcs, mcs_table);
+  pdsch->R = nr_get_code_rate_dl(mcs, mcs_table);
+  const int nb_dmrs_prb = pdsch->dmrs_parms.N_PRB_DMRS * pdsch->dmrs_parms.N_DMRS_SLOT;
+  uint16_t rb_size = 0;
+  nr_find_nb_rb(pdsch->Qm,
+                pdsch->R,
+                1,
+                pdsch->nrOfLayers,
+                pdsch->tda_info.nrOfSymbols,
+                nb_dmrs_prb,
+                bytes,
+                tx->K,
+                tx->max_rbs,
+                &pdsch->tb_size,
+                &rb_size);
+  pdsch->rbSize = min((rb_size + tx->K - 1) / tx->K * tx->K, tx->max_rbs);
+  pdsch->tb_size = nr_compute_tbs(pdsch->Qm,
+                                  pdsch->R,
+                                  pdsch->rbSize,
+                                  pdsch->tda_info.nrOfSymbols,
+                                  nb_dmrs_prb,
+                                  0, // xOverhead-Multicast not configured (TS 38.214 §5.1.3.2)
+                                  0,
+                                  pdsch->nrOfLayers)
+                   >> 3;
+}
+
+static void nr_mbs_reserve_resources(nr_cell_sched_t *cell, nr_mbs_tx_t *tx)
+{
+  fill_pdcch_vrb_map(cell, &tx->sched_pdcch, tx->cce_index, tx->aggregation_level, tx->beam.idx);
+  const NR_sched_pdsch_t *pdsch = &tx->sched_pdsch;
+  const uint16_t slbitmap = SL_to_bitmap(pdsch->tda_info.startSymbolIndex, pdsch->tda_info.nrOfSymbols);
+  uint16_t *vrb_map = cell->common_channels.vrb_map[tx->beam.idx];
+  for (int rb = 0; rb < pdsch->rbSize; rb++)
+    vrb_map[pdsch->bwp_info.bwpStart + pdsch->rbStart + rb] |= slbitmap;
+}
+
+/* @return true if a PTM PDSCH of the group is scheduled in the slot */
+static bool nr_schedule_mbs_group(gNB_MAC_INST *mac, nr_cell_sched_t *cell, post_process_pdsch_t *pp_pdsch, nr_mbs_group_t *group)
 {
   const frame_t frame = pp_pdsch->frame;
   const slot_t slot = pp_pdsch->slot;
-  NR_ServingCellConfigCommon_t *scc = cell->common_channels.ServingCellConfigCommon;
 
   NR_UE_info_t *members[MAX_MOBILES_PER_GNB];
   int n_members = 0;
@@ -667,139 +781,57 @@ static void nr_schedule_mbs_group(gNB_MAC_INST *mac, nr_cell_sched_t *cell, post
     if (UE && nr_mac_ue_is_active(UE) && !UE->reconfigCellGroup)
       members[n_members++] = UE;
   }
-  if (group->config.broadcast) {
-    /* A broadcast session has no members: it is announced in the cell, and transmitted whether or not anybody is
-     * connected. The connected UEs of the cell are still looked at, as any of them may be receiving it: the PTM HARQ
-     * processes are kept out of their unicast scheduling, and they get no unicast PDSCH in the slot of a PTM one */
-    FOR_EACH_CONNECTED_UE(&mac->UE_info, UE) {
-      if (UE->pcell == cell && nr_mac_ue_is_active(UE) && nr_mac_reserve_ptm_harq(group, UE))
-        members[n_members++] = UE;
-    }
-  } else if (n_members == 0) {
-    return;
-  }
+  /* A broadcast session has no members: it is announced in the cell, and transmitted whether or not anybody is
+   * connected */
+  const bool broadcast = group->config.broadcast;
+  if (!broadcast && n_members == 0)
+    return false;
 
   const logical_chan_id_t lcid = group->config.lcid;
   mac_rlc_status_resp_t rlc_status;
   nr_mac_rlc_status_ind(group->g_rnti, frame, 1, &lcid, &rlc_status);
   group->pending_bytes = rlc_status.bytes_in_buffer;
   if (group->pending_bytes == 0)
-    return;
+    return false;
 
-  const int pid = get_ptm_harq_pid(group, members, n_members, group->last_harq_pid);
+  /* DCI format 4_0 indicates no HARQ process: the TB of a broadcast transmission is kept in the first entry */
+  const int pid = broadcast ? 0 : get_ptm_harq_pid(group, members, n_members, group->last_harq_pid);
   if (pid < 0) {
     LOG_D(NR_MAC, "%4d.%2d G-RNTI %04x: no PTM HARQ process free in all members\n", frame, slot, group->g_rnti);
-    return;
+    return false;
   }
 
-  /* single beam: transmitted on the beam of the first SSB as other common channels */
-  const int n_slots_frame = cell->frame_structure.numb_slots_frame;
-  const NR_COMMON_channels_t *cc = &cell->common_channels;
-  const int beam_index = get_beam_from_ssbidx(cell, cc->num_active_ssb > 0 ? cc->ssb_index[0] : 0);
-  NR_beam_alloc_t beam = beam_allocation_procedure(&cell->beam_info, frame, slot, beam_index, n_slots_frame);
-  if (beam.idx < 0)
-    return;
-
-  NR_SearchSpace_t *ss = cell->mbs_search_space;
-  NR_ControlResourceSet_t *coreset = cell->mbs_coreset;
-  NR_BWP_t *initial_dl_bwp = &scc->downlinkConfigCommon->initialDownlinkBWP->genericParameters;
-  NR_sched_pdcch_t sched_pdcch = set_pdcch_structure(cell, ss, coreset, scc, initial_dl_bwp, cell->type0_PDCCH_CSS_config);
-  int aggregation_level = 0;
-  const int cce_index = get_cce_index(cell, slot, group->g_rnti, &aggregation_level, beam.idx, ss, coreset, &sched_pdcch, 0.0f);
-  if (cce_index < 0) {
-    LOG_D(NR_MAC, "%4d.%2d G-RNTI %04x: no free CCE for MBS DCI\n", frame, slot, group->g_rnti);
-    reset_beam_status(&cell->beam_info, frame, slot, beam_index, n_slots_frame, beam.new_beam);
-    return;
-  }
-
-  /* TS 38.214 Table 5.1.2.1.1-1: pdsch-TimeDomainAllocationList of PDSCH-ConfigCommon for G-RNTI in a Type-3 CSS */
-  NR_PDSCH_TimeDomainResourceAllocationList_t *tdalist =
-      scc->downlinkConfigCommon->initialDownlinkBWP->pdsch_ConfigCommon->choice.setup->pdsch_TimeDomainAllocationList;
-  const int tda = get_dl_tda(mac, cell, slot);
-  NR_tda_info_t tda_info = set_tda_info_from_list(tdalist, tda);
-  DevAssert(tda_info.valid_tda);
-  NR_pdsch_dmrs_t dmrs_parms = get_dl_dmrs_params(scc, NULL, &tda_info, 1);
-  const uint16_t slbitmap = SL_to_bitmap(tda_info.startSymbolIndex, tda_info.nrOfSymbols);
-
-  /* the CFR is the initial DL BWP; DCI format 4_1 addresses its first K * N_CORESET0 RBs */
-  const bwp_info_t cfr = {.bwpStart = NRRIV2PRBOFFSET(initial_dl_bwp->locationAndBandwidth, MAX_BWP_SIZE),
-                          .bwpSize = NRRIV2BW(initial_dl_bwp->locationAndBandwidth, MAX_BWP_SIZE)};
-  const int K = group->config.dci_4_2 ? 1 : get_multicast_type1_rb_granularity(cfr.bwpSize, cell->cset0_bwp_size);
-  uint16_t *vrb_map = cell->common_channels.vrb_map[beam.idx];
-  int rb_start = 0;
-  const int addressable_rbs = group->config.dci_4_2 ? cfr.bwpSize : min(cfr.bwpSize, K * cell->cset0_bwp_size);
-  const int free_rbs = get_ptm_rb_block(vrb_map, cfr.bwpStart, addressable_rbs, K, slbitmap, &rb_start);
-  const int max_rbs = free_rbs / (1 + get_num_dl_active_ues(&mac->UE_info, cell)) / K * K;
-  if (max_rbs == 0) {
-    reset_beam_status(&cell->beam_info, frame, slot, beam_index, n_slots_frame, beam.new_beam);
-    return;
-  }
-
+  NR_SearchSpace_t *ss = broadcast ? cell->mbs_broadcast_search_space : cell->mbs_search_space;
+  nr_mbs_tx_t tx;
+  const int share = 1 + get_num_dl_active_ues(&mac->UE_info, cell);
+  if (!nr_mbs_get_resources(mac, cell, frame, slot, group->g_rnti, ss, group->config.dci_4_2, share, &tx))
+    return false;
   const int mcs = mac->mbs_mcs_select(cell, group, members, n_members);
-  const int mcs_table = 0;
-  NR_sched_pdsch_t sched_pdsch = {
-      .bwp_info = cfr,
-      .time_domain_allocation = tda,
-      .tda_info = tda_info,
-      .dmrs_parms = dmrs_parms,
-      .nrOfLayers = 1,
-      .mcs = mcs,
-      .Qm = nr_get_Qm_dl(mcs, mcs_table),
-      .R = nr_get_code_rate_dl(mcs, mcs_table),
-      .alloc_type = PDSCH_TYPE1,
-      .rbStart = rb_start,
-      .dl_harq_pid = pid,
-      .pucch_allocation = -1,
-      .ant_port_idx = {.numSpatialStreamIndices = 1, .spatialStreamIndices[0] = cell->radio_config.spatial_stream_index[beam.idx]},
-  };
   /* the RLC buffer status includes the RLC headers, add one long MAC subheader per RLC PDU, at least one for the
    * remaining segment of an SDU */
-  const uint32_t bytes = group->pending_bytes + sizeof(NR_MAC_SUBHEADER_LONG) * max(1, rlc_status.pdus_in_buffer);
-  uint16_t rb_size = 0;
-  nr_find_nb_rb(sched_pdsch.Qm,
-                sched_pdsch.R,
-                1,
-                sched_pdsch.nrOfLayers,
-                tda_info.nrOfSymbols,
-                dmrs_parms.N_PRB_DMRS * dmrs_parms.N_DMRS_SLOT,
-                bytes,
-                K,
-                max_rbs,
-                &sched_pdsch.tb_size,
-                &rb_size);
-  sched_pdsch.rbSize = min((rb_size + K - 1) / K * K, max_rbs);
-  sched_pdsch.tb_size = nr_compute_tbs(sched_pdsch.Qm,
-                                       sched_pdsch.R,
-                                       sched_pdsch.rbSize,
-                                       tda_info.nrOfSymbols,
-                                       dmrs_parms.N_PRB_DMRS * dmrs_parms.N_DMRS_SLOT,
-                                       0, // xOverhead-Multicast not configured (TS 38.214 §5.1.3.2)
-                                       0,
-                                       sched_pdsch.nrOfLayers)
-                        >> 3;
+  nr_mbs_size_pdsch(&tx, mcs, group->pending_bytes + sizeof(NR_MAC_SUBHEADER_LONG) * max(1, rlc_status.pdus_in_buffer));
+  NR_sched_pdsch_t *sched_pdsch = &tx.sched_pdsch;
+  sched_pdsch->dl_harq_pid = pid;
 
   int pucch_index[n_members + 1];
   const bool harq_feedback = group->config.harq_feedback == NR_MBS_HARQ_FEEDBACK_ACK_NACK;
-  if (harq_feedback && nr_mbs_acknack_scheduling(cell, group, members, n_members, frame, slot, cce_index, pucch_index) < 0) {
+  if (harq_feedback && nr_mbs_acknack_scheduling(cell, group, members, n_members, frame, slot, tx.cce_index, pucch_index) < 0) {
     LOG_D(NR_MAC, "%4d.%2d G-RNTI %04x: no common PUCCH occasion for the HARQ-ACK of the members\n", frame, slot, group->g_rnti);
-    reset_beam_status(&cell->beam_info, frame, slot, beam_index, n_slots_frame, beam.new_beam);
-    return;
+    nr_mbs_release_beam(cell, frame, slot, &tx);
+    return false;
   }
-
-  fill_pdcch_vrb_map(cell, &sched_pdcch, cce_index, aggregation_level, beam.idx);
-  for (int rb = 0; rb < sched_pdsch.rbSize; rb++)
-    vrb_map[cfr.bwpStart + sched_pdsch.rbStart + rb] |= slbitmap;
+  nr_mbs_reserve_resources(cell, &tx);
 
   nr_mbs_harq_t *harq = &group->harq[pid];
   harq->ndi ^= 1;
   harq->round = 0;
-  harq->sched_pdsch = sched_pdsch;
-  uint8_t *buf = allocate_transportBlock_buffer(&harq->transportBlock, sched_pdsch.tb_size);
-  const int sdu_bytes = nr_mbs_generate_mac_pdu(mac, group, buf, sched_pdsch.tb_size);
+  harq->sched_pdsch = *sched_pdsch;
+  uint8_t *buf = allocate_transportBlock_buffer(&harq->transportBlock, sched_pdsch->tb_size);
+  const int sdu_bytes = nr_mbs_generate_mac_pdu(mac, group, buf, sched_pdsch->tb_size);
   group->last_harq_pid = pid;
 
   /* the members await the HARQ-ACK of the PTM transmission in the HARQ process, for PTP retransmissions of the TB */
-  const uint32_t ptm_tbslbrm = nr_compute_tbslbrm(mcs_table, cfr.bwpSize, sched_pdsch.nrOfLayers);
+  const uint32_t ptm_tbslbrm = nr_compute_tbslbrm(0, sched_pdsch->bwp_info.bwpSize, sched_pdsch->nrOfLayers);
   for (int m = 0; harq_feedback && m < n_members; m++) {
     NR_UE_sched_ctrl_t *sched_ctrl = &members[m]->UE_sched_ctrl;
     NR_UE_harq_t *member_harq = &sched_ctrl->harq_processes[pid];
@@ -810,7 +842,7 @@ static void nr_schedule_mbs_group(gNB_MAC_INST *mac, nr_cell_sched_t *cell, post
     member_harq->feedback_slot = pucch->ul_slot;
     member_harq->ndi = harq->ndi;
     member_harq->round = 0;
-    member_harq->sched_pdsch = sched_pdsch;
+    member_harq->sched_pdsch = *sched_pdsch;
     member_harq->ptm_tbslbrm = ptm_tbslbrm;
     id_list_push_back(&sched_ctrl->feedback_dl_harq, pid);
   }
@@ -819,16 +851,17 @@ static void nr_schedule_mbs_group(gNB_MAC_INST *mac, nr_cell_sched_t *cell, post
   nr_mbs_fill_pdcch_pdsch(cell,
                           pp_pdsch,
                           group,
-                          &sched_pdsch,
+                          0,
+                          sched_pdsch,
                           harq_feedback ? &members[0]->UE_sched_ctrl.sched_pucch[pucch_index[0]] : NULL,
-                          &sched_pdcch,
-                          coreset,
-                          aggregation_level,
-                          cce_index,
-                          beam.idx,
+                          &tx.sched_pdcch,
+                          tx.coreset,
+                          tx.aggregation_level,
+                          tx.cce_index,
+                          tx.beam.idx,
                           pdu_index,
                           n_members > 0 ? members[0] : NULL);
-  fill_dl_tx_request(pp_pdsch, buf, pdu_index, sched_pdsch.tb_size, frame, slot);
+  fill_dl_tx_request(pp_pdsch, buf, pdu_index, sched_pdsch->tb_size, frame, slot);
   T(T_GNB_MAC_DL_PDU_WITH_DATA,
     T_INT(mac->Mod_id),
     T_INT(0),
@@ -836,7 +869,7 @@ static void nr_schedule_mbs_group(gNB_MAC_INST *mac, nr_cell_sched_t *cell, post
     T_INT(frame),
     T_INT(slot),
     T_INT(pid),
-    T_BUFFER(buf, sched_pdsch.tb_size));
+    T_BUFFER(buf, sched_pdsch->tb_size));
   group->ptm_tx++;
   group->ptm_sdu_bytes += sdu_bytes;
   for (int m = 0; m < n_members; m++) {
@@ -851,18 +884,19 @@ static void nr_schedule_mbs_group(gNB_MAC_INST *mac, nr_cell_sched_t *cell, post
         slot,
         group->g_rnti,
         n_members,
-        cce_index,
-        aggregation_level,
-        sched_pdsch.rbStart,
-        sched_pdsch.rbSize,
-        K,
-        tda_info.startSymbolIndex,
-        tda_info.nrOfSymbols,
+        tx.cce_index,
+        tx.aggregation_level,
+        sched_pdsch->rbStart,
+        sched_pdsch->rbSize,
+        tx.K,
+        sched_pdsch->tda_info.startSymbolIndex,
+        sched_pdsch->tda_info.nrOfSymbols,
         mcs,
-        sched_pdsch.tb_size,
+        sched_pdsch->tb_size,
         sdu_bytes,
         pid,
         harq->ndi);
+  return true;
 }
 
 /** @brief Handles the HARQ-ACK of a member for a PTM transmission. After a NACK, or no HARQ-ACK, the TB is retransmitted
@@ -899,19 +933,139 @@ void nr_mbs_handle_dl_harq(NR_UE_info_t *UE, int harq_pid, bool success, int har
         harq_pid);
 }
 
-/** @brief Schedules PTM transmissions of the MBS groups of the cell in the current DL slot. Called before unicast
- * scheduling, so that group traffic is served first. */
+/* MAC PDU of the MCCH: the MCCH-Message as a complete SDU in a UMD PDU with a 1-byte header (TS 38.322 §6.2.2.3, SI 00), in
+ * a MAC SDU of LCID 0 (TS 38.321 Table 6.2.1-1c), then padding */
+static void nr_mcch_generate_mac_pdu(const uint8_t *msg, int len, uint8_t *buf, uint32_t TBS)
+{
+  uint8_t *bufEnd = buf + TBS;
+  NR_MAC_SUBHEADER_LONG *header = (NR_MAC_SUBHEADER_LONG *)buf;
+  header->R = 0;
+  header->F = 1;
+  header->LCID = 0;
+  header->L = htons(len + 1);
+  buf += sizeof(*header);
+  *buf++ = 0;
+  memcpy(buf, msg, len);
+  buf += len;
+  if (bufEnd - buf > 0) {
+    NR_MAC_SUBHEADER_FIXED *padding = (NR_MAC_SUBHEADER_FIXED *)buf;
+    padding->R = 0;
+    padding->LCID = DL_SCH_LCID_PADDING;
+    buf++;
+    memset(buf, 0, bufEnd - buf);
+  }
+}
+
+/* Sends the MCCH once in each of its transmission windows, with DCI format 4_0 and MCCH-RNTI in the CSS of searchSpaceMCCH
+ * (TS 38.331 §5.9.1.2), on the first slot of the window that has room. A new MCCH-Message applies from a modification
+ * period boundary on, and all the PDCCHs of the MCCH in that modification period carry its change notification
+ * (TS 38.331 §5.9.1.3). Single beam, as for the MTCHs: on the beam of the first SSB, whose PDCCH monitoring occasions are
+ * the first of the window (TS 38.331 §5.9.1.2).
+ * @return true if the MCCH is scheduled in the slot */
+static bool nr_schedule_mcch(gNB_MAC_INST *mac, nr_cell_sched_t *cell, post_process_pdsch_t *pp_pdsch)
+{
+  const frame_t frame = pp_pdsch->frame;
+  const slot_t slot = pp_pdsch->slot;
+  if (!cell->mcch.active || frame % NR_MCCH_REPETITION_PERIOD_RF != NR_MCCH_REPETITION_OFFSET_RF || slot < NR_MCCH_WINDOW_START_SLOT
+      || slot >= NR_MCCH_WINDOW_START_SLOT + NR_MCCH_WINDOW_DURATION_SLOTS || cell->mcch.sent_frame == frame)
+    return false;
+  const int period = frame / NR_MCCH_MODIFICATION_PERIOD_RF;
+  if (period != cell->mcch.modification_period) {
+    cell->mcch.modification_period = period;
+    cell->mcch.change = 0;
+    if (cell->mcch.next_len > 0) {
+      memcpy(cell->mcch.pdu, cell->mcch.next_pdu, cell->mcch.next_len);
+      cell->mcch.len = cell->mcch.next_len;
+      cell->mcch.change = cell->mcch.next_change;
+      cell->mcch.next_len = 0;
+      cell->mcch.next_change = 0;
+    }
+  }
+
+  nr_mbs_tx_t tx;
+  if (!nr_mbs_get_resources(mac, cell, frame, slot, MCCH_RNTI, cell->mbs_broadcast_search_space, false, 1, &tx))
+    return false;
+  const uint32_t bytes = sizeof(NR_MAC_SUBHEADER_LONG) + 1 + cell->mcch.len;
+  nr_mbs_size_pdsch(&tx, cell->mbs_broadcast_mcs, bytes);
+  NR_sched_pdsch_t *sched_pdsch = &tx.sched_pdsch;
+  if (sched_pdsch->tb_size < bytes) {
+    LOG_D(NR_MAC, "%4d.%2d no room for the MCCH-Message of %d bytes\n", frame, slot, cell->mcch.len);
+    nr_mbs_release_beam(cell, frame, slot, &tx);
+    return false;
+  }
+  nr_mbs_reserve_resources(cell, &tx);
+  uint8_t *buf = allocate_transportBlock_buffer(&cell->mcch.tb, sched_pdsch->tb_size);
+  nr_mcch_generate_mac_pdu(cell->mcch.pdu, cell->mcch.len, buf, sched_pdsch->tb_size);
+  const int pdu_index = cell->pdu_index++;
+  nr_mbs_fill_pdcch_pdsch(cell,
+                          pp_pdsch,
+                          NULL,
+                          cell->mcch.change,
+                          sched_pdsch,
+                          NULL,
+                          &tx.sched_pdcch,
+                          tx.coreset,
+                          tx.aggregation_level,
+                          tx.cce_index,
+                          tx.beam.idx,
+                          pdu_index,
+                          NULL);
+  fill_dl_tx_request(pp_pdsch, buf, pdu_index, sched_pdsch->tb_size, frame, slot);
+  T(T_GNB_MAC_DL_PDU_WITH_DATA,
+    T_INT(mac->Mod_id),
+    T_INT(0),
+    T_INT(MCCH_RNTI),
+    T_INT(frame),
+    T_INT(slot),
+    T_INT(0),
+    T_BUFFER(buf, sched_pdsch->tb_size));
+  cell->mcch.sent_frame = frame;
+  LOG_D(NR_MAC,
+        "%4d.%2d [MCCH] %d bytes, change notification %d, CCE %d L %d RBs %d+%d MCS %d TBS %d\n",
+        frame,
+        slot,
+        cell->mcch.len,
+        cell->mcch.change,
+        tx.cce_index,
+        tx.aggregation_level,
+        sched_pdsch->rbStart,
+        sched_pdsch->rbSize,
+        sched_pdsch->mcs,
+        sched_pdsch->tb_size);
+  return true;
+}
+
+/** @brief Schedules the MCCH and the PTM transmissions of the MBS groups of the cell in the current DL slot. Called before
+ * unicast scheduling, so that MBS traffic is served first. */
 void nr_schedule_mbs(gNB_MAC_INST *mac, nr_cell_sched_t *cell, post_process_pdsch_t *pp_pdsch)
 {
   /* already mutex protected: held in gNB_dlsch_ulsch_scheduler() */
   AssertFatal(pthread_mutex_trylock(&mac->sched_lock) == EBUSY, "this function should be called with the scheduler mutex locked\n");
+  cell->mbs_broadcast_in_slot = false;
   if (!is_dl_slot(pp_pdsch->slot, &cell->frame_structure))
     return;
+  nr_mbs_group_t *groups[NR_MAX_MBS_GROUPS];
+  int n = 0;
   for (nr_mbs_group_t **g = mac->UE_info.mbs_group_list; *g; g++) {
     if ((*g)->cell != cell)
       continue;
     if ((*g)->num_pending > 0)
       add_pending_members(mac, *g);
-    nr_schedule_mbs_group(mac, cell, pp_pdsch, *g);
+    groups[n++] = *g;
+  }
+  /* the MCCH is the slot's PTM PDSCH, and every UE of the cell may be acquiring it */
+  if (nr_schedule_mcch(mac, cell, pp_pdsch)) {
+    cell->mbs_broadcast_in_slot = true;
+    return;
+  }
+  /* A UE decodes one PDSCH per slot, and any UE may be receiving a broadcast session besides its multicast ones: one PTM
+   * PDSCH per slot, the groups taking turns */
+  for (int i = 0; i < n; i++) {
+    nr_mbs_group_t *group = groups[(cell->mbs_next_group + i) % n];
+    if (nr_schedule_mbs_group(mac, cell, pp_pdsch, group)) {
+      cell->mbs_broadcast_in_slot = group->config.broadcast;
+      cell->mbs_next_group = (cell->mbs_next_group + i + 1) % n;
+      break;
+    }
   }
 }

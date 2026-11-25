@@ -42,12 +42,16 @@ NR_SearchSpace_t *rrc_searchspace_config(bool is_common,
                                          int searchspaceid,
                                          int coresetid,
                                          const int num_agg_level_candidates[NUM_PDCCH_AGG_LEVELS]);
-/// CORESET and search space of pdcch-ConfigMulticast, distinct from the ones of all BWPs of the cell, as the ID spaces are
-/// shared across BWPs (TS 38.331 §6.3.2 ControlResourceSet, SearchSpace)
+/// CORESET of the MBS PDCCHs, search space of pdcch-ConfigMulticast (DCI formats 4_1/4_2) and of searchSpaceMCCH and
+/// searchSpaceMTCH (DCI format 4_0), distinct from the ones of all BWPs of the cell, as the ID spaces are shared across BWPs
+/// (TS 38.331 §6.3.2 ControlResourceSet, SearchSpace)
 #define NR_MBS_CORESET_ID 11
 #define NR_MBS_SEARCH_SPACE_ID 30
+#define NR_MBS_BROADCAST_SEARCH_SPACE_ID 31
 NR_ControlResourceSet_t *get_mbs_coreset_config(const NR_ServingCellConfigCommon_t *scc, const nr_mac_config_t *configuration);
-NR_SearchSpace_t *get_mbs_search_space_config(const NR_ControlResourceSet_t *coreset, const nr_mac_config_t *configuration);
+NR_SearchSpace_t *get_mbs_search_space_config(const NR_ControlResourceSet_t *coreset,
+                                              const nr_mac_config_t *configuration,
+                                              int search_space_id);
 NR_PDSCH_Config_t *get_mbs_pdsch_config(const NR_ServingCellConfigCommon_t *scc);
 void add_mbs_cellGroupConfig(NR_CellGroupConfig_t *cellGroupConfig,
                              rnti_t g_rnti,
@@ -101,10 +105,17 @@ typedef struct {
   long lcid;
   long t_reassembly;
 } nr_mbs_broadcast_session_t;
-NR_SIB20_r17_t *get_SIB20_NR(const NR_ControlResourceSet_t *coreset,
-                             int num_sessions,
-                             const nr_mbs_broadcast_session_t sessions[num_sessions]);
-void add_SIB1_mtch_search_space(NR_BCCH_DL_SCH_Message_t *sib1, const NR_SearchSpace_t *ss);
+/// MCCH of a cell (MCCH-Config-r17, TS 38.331 §5.9.1.2): sent in the radio frames with SFN mod NR_MCCH_REPETITION_PERIOD_RF =
+/// NR_MCCH_REPETITION_OFFSET_RF, in a window of NR_MCCH_WINDOW_DURATION_SLOTS slots from slot NR_MCCH_WINDOW_START_SLOT, and
+/// changed only at the radio frames with SFN mod NR_MCCH_MODIFICATION_PERIOD_RF = 0
+#define NR_MCCH_REPETITION_PERIOD_RF 16
+#define NR_MCCH_REPETITION_OFFSET_RF 0
+#define NR_MCCH_WINDOW_START_SLOT 0
+#define NR_MCCH_WINDOW_DURATION_SLOTS 10
+#define NR_MCCH_MODIFICATION_PERIOD_RF 64
+NR_SIB20_r17_t *get_SIB20_NR(const NR_ControlResourceSet_t *coreset);
+int encode_MCCH_message_NR(int num_sessions, const nr_mbs_broadcast_session_t sessions[num_sessions], uint8_t *buf, int buf_size);
+void add_SIB1_mbs_search_space(NR_BCCH_DL_SCH_Message_t *sib1, const NR_SearchSpace_t *ss);
 
 NR_CellGroupConfig_t *get_initial_cellGroupConfig(int uid,
                                                   bool redcap,

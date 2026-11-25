@@ -187,6 +187,17 @@ static int8_t handle_pcch(NR_UE_MAC_INST_t *mac, nr_downlink_indication_t *dl_in
   return 0;
 }
 
+static int8_t handle_mcch(NR_UE_MAC_INST_t *mac, nr_downlink_indication_t *dl_info, int pdu_id)
+{
+  const fapi_nr_pdsch_pdu_t *pdsch_pdu = &dl_info->rx_ind->rx_indication_body[pdu_id].pdsch_pdu;
+  if (!pdsch_pdu->ack_nack) {
+    LOG_D(NR_MAC, "[%04d.%02d] MCCH not decoded\n", dl_info->frame, dl_info->slot);
+    return 0;
+  }
+  nr_ue_process_mcch(mac, dl_info->frame, pdsch_pdu->pdu, pdsch_pdu->pdu_length);
+  return 0;
+}
+
 // L2 Abstraction Layer
 // Note: sdu should always be processed because data and timing advance updates are transmitted by the UE
 static int8_t handle_dlsch(NR_UE_MAC_INST_t *mac, nr_downlink_indication_t *dl_info, int pdu_id)
@@ -283,8 +294,8 @@ static uint32_t nr_ue_dl_processing(NR_UE_MAC_INST_t *mac, nr_downlink_indicatio
       nr_dci_format_t dci_format = handle_dci(mac, dl_info->frame, dl_info->slot, dl_info->dci_ind->dci_list + i);
 
       /* The check below filters out UL_DCIs which are being processed as DL_DCIs. */
-      if (dci_format != NR_DL_DCI_FORMAT_1_0 && dci_format != NR_DL_DCI_FORMAT_1_1 && dci_format != NR_DL_DCI_FORMAT_4_1
-          && dci_format != NR_DL_DCI_FORMAT_4_2) {
+      if (dci_format != NR_DL_DCI_FORMAT_1_0 && dci_format != NR_DL_DCI_FORMAT_1_1 && dci_format != NR_DL_DCI_FORMAT_4_0
+          && dci_format != NR_DL_DCI_FORMAT_4_1 && dci_format != NR_DL_DCI_FORMAT_4_2) {
         LOG_D(NR_MAC, "We are filtering a UL_DCI to prevent it from being treated like a DL_DCI\n");
         continue;
       }
@@ -345,6 +356,9 @@ static uint32_t nr_ue_dl_processing(NR_UE_MAC_INST_t *mac, nr_downlink_indicatio
           break;
         case FAPI_NR_RX_PDU_TYPE_PCCH:
           ret_mask |= (handle_pcch(mac, dl_info, i)) << FAPI_NR_RX_PDU_TYPE_PCCH;
+          break;
+        case FAPI_NR_RX_PDU_TYPE_MCCH:
+          ret_mask |= (handle_mcch(mac, dl_info, i)) << FAPI_NR_RX_PDU_TYPE_MCCH;
           break;
         case FAPI_NR_RX_PDU_TYPE_RAR:
           if (!dl_info->rx_ind->rx_indication_body[i].pdsch_pdu.ack_nack) {
